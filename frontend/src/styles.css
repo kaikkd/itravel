@@ -521,7 +521,8 @@
     transparent 70%
   );
   background-size: 200% 100%;
-  animation: sheen-move 3.6s ease-in-out infinite;
+  /* 进场扫光一次即停，不再持续闪烁 */
+  animation: sheen-move 1.1s ease-out 0.3s 1 both;
 }
 
 /* 出行方式图标轻微浮动 */

@@ -70,6 +70,7 @@ export default function ScheduleColumn() {
   const phase = useItineraryStore((s) => s.phase);
   const degraded = useItineraryStore((s) => s.degraded);
   const skeleton = useItineraryStore((s) => s.skeleton);
+  const statusText = useItineraryStore((s) => s.statusText);
   const removeStop = useItineraryStore((s) => s.removeStop);
   const reorderStops = useItineraryStore((s) => s.reorderStops);
   const setTransitMode = useItineraryStore((s) => s.setTransitMode);
@@ -121,6 +122,11 @@ export default function ScheduleColumn() {
         )}
 
         {empty && <EmptyState />}
+
+        {/* 流式规划刚进入、骨架未到的空窗期：先提示「AI 正在规划」，避免中间空白 */}
+        {streaming && !skeleton && totalStops === 0 && (
+          <PlanningState text={statusText} />
+        )}
 
         {streaming && skeleton && totalStops === 0 && (
           <SkeletonDays count={skeleton.day_count} />
@@ -214,6 +220,27 @@ function EmptyState() {
         在下方对话框描述你的旅行，比如「成都耍三天，爱吃辣，想轻松点」，
         itravel 会为你排好每天的吃住玩。
       </p>
+    </div>
+  );
+}
+
+// 流式规划刚进入、骨架未到时的占位：让用户知道 AI 正在规划，而非空白。
+function PlanningState({ text }: { text: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-4 rounded-3xl border border-dashed border-clay-soft bg-clay-soft/10 py-20 text-center">
+      <div className="relative flex h-14 w-14 items-center justify-center">
+        <span className="absolute inset-0 animate-ping rounded-2xl bg-clay-soft opacity-60" />
+        <div className="relative flex h-14 w-14 items-center justify-center rounded-2xl bg-clay text-white shadow-soft">
+          <Sparkles className="h-6 w-6" />
+        </div>
+      </div>
+      <div>
+        <p className="text-sm font-semibold text-ink">itravel 正在规划你的行程…</p>
+        <p className="mt-1 inline-flex items-center gap-1.5 text-xs text-stone">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          {text || "理解你的需求，编排每日吃住玩"}
+        </p>
+      </div>
     </div>
   );
 }
