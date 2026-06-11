@@ -9,6 +9,12 @@ import type {
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
 
 const TOKEN_KEY = "itravel_token";
+const JSON_HEADERS = { "Content-Type": "application/json" } as const;
+
+interface RequestOptions extends RequestInit {
+  onUnauthorized?: () => unknown;
+  errorMessage?: string;
+}
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
@@ -25,28 +31,88 @@ function authHeaders(extra: Record<string, string> = {}): Record<string, string>
   return t ? { ...extra, Authorization: `Bearer ${t}` } : extra;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function readJson<T>(res: Response): Promise<T> {
+  const text = await res.text();
+  if (!text) return null as T;
+  return JSON.parse(text) as T;
+}
+
+function detailToMessage(detail: unknown): string | null {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (isRecord(item) && typeof item.msg === "string") return item.msg;
+        return null;
+      })
+      .filter(Boolean)
+      .join("；") || null;
+  }
+  return null;
+}
+
+async function readErrorMessage(res: Response, fallback: string): Promise<string> {
+  const text = await res.text().catch(() => "");
+  if (text) {
+    try {
+      const body = JSON.parse(text) as unknown;
+      if (isRecord(body)) {
+        const detail = detailToMessage(body.detail);
+        if (detail) return detail;
+        if (typeof body.message === "string") return body.message;
+      }
+    } catch {
+      return text;
+    }
+  }
+  return `${fallback}：${res.status}`;
+}
+
+async function requestJson<T>(
+  path: string,
+  { onUnauthorized, errorMessage, ...init }: RequestOptions = {},
+): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, init);
+  if (res.status === 401) {
+    clearToken();
+    if (onUnauthorized) return onUnauthorized() as T;
+  }
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res, errorMessage ?? `${path} 返回`));
+  }
+  return readJson<T>(res);
+}
+
+function postJson<T>(
+  path: string,
+  body: unknown,
+  options: Omit<RequestOptions, "body" | "method"> = {},
+): Promise<T> {
+  return requestJson<T>(path, {
+    ...options,
+    method: "POST",
+    headers: { ...JSON_HEADERS, ...(options.headers as Record<string, string> | undefined) },
+    body: JSON.stringify(body),
+  });
+}
+
 // ---- 已保存行程（M5） ----
 
 export async function listItineraries(): Promise<ItinerarySummary[]> {
-  const res = await fetch(`${API_BASE}/itineraries`, { headers: authHeaders() });
-  if (res.status === 401) {
-    clearToken();
-    return [];
-  }
-  if (!res.ok) {
-    throw new Error(`/itineraries 返回 ${res.status}`);
-  }
-  return res.json();
+  return requestJson<ItinerarySummary[]>("/itineraries", {
+    headers: authHeaders(),
+    onUnauthorized: () => [],
+  });
 }
 
 export async function getItinerary(id: number): Promise<Itinerary> {
-  const res = await fetch(`${API_BASE}/itineraries/${id}`, {
+  return requestJson<Itinerary>(`/itineraries/${id}`, {
     headers: authHeaders(),
   });
-  if (!res.ok) {
-    throw new Error(`/itineraries/${id} 返回 ${res.status}`);
-  }
-  return res.json();
 }
 
 // 保存当前行程（草案树）到后端，绑定当前登录用户。返回落库后的完整树。
@@ -78,16 +144,11 @@ export async function saveItinerary(itinerary: Itinerary): Promise<Itinerary> {
       transits: buildTransitCreate(d),
     })),
   };
-  const res = await fetch(`${API_BASE}/itineraries`, {
-    method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify(payload),
+
+  return postJson<Itinerary>("/itineraries", payload, {
+    headers: authHeaders(),
+    errorMessage: "保存失败",
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail ?? `保存失败：${res.status}`);
-  }
-  return res.json();
 }
 
 // 后端 Transit 用当天 order_index 指明相邻段；据 stop_id → order_index 映射转换
@@ -117,43 +178,27 @@ export async function register(
   email: string,
   password: string,
 ): Promise<AuthResult> {
-  const res = await fetch(`${API_BASE}/auth/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
+  return postJson<AuthResult>("/auth/register", { email, password }, {
+    errorMessage: "注册失败",
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail ?? `注册失败：${res.status}`);
-  }
-  return res.json();
 }
 
 export async function login(
   email: string,
   password: string,
 ): Promise<AuthResult> {
-  const res = await fetch(`${API_BASE}/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
+  return postJson<AuthResult>("/auth/login", { email, password }, {
+    errorMessage: "登录失败",
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail ?? `登录失败：${res.status}`);
-  }
-  return res.json();
 }
 
 export async function getMe(): Promise<{ id: number; email: string } | null> {
   const t = getToken();
   if (!t) return null;
-  const res = await fetch(`${API_BASE}/auth/me`, { headers: authHeaders() });
-  if (!res.ok) {
-    clearToken();
-    return null;
-  }
-  return res.json();
+  return requestJson<{ id: number; email: string } | null>("/auth/me", {
+    headers: authHeaders(),
+    onUnauthorized: () => null,
+  });
 }
 
 // ---- 交通重算（M4） ----
@@ -174,15 +219,10 @@ export interface SegmentResult {
 export async function recomputeTransits(
   segments: SegmentIn[],
 ): Promise<SegmentResult[]> {
-  const res = await fetch(`${API_BASE}/transit/recompute`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ segments }),
-  });
-  if (!res.ok) {
-    throw new Error(`/transit/recompute 返回 ${res.status}`);
-  }
-  const body = (await res.json()) as { results: SegmentResult[] };
+  const body = await postJson<{ results: SegmentResult[] }>(
+    "/transit/recompute",
+    { segments },
+  );
   return body.results;
 }
 
@@ -228,6 +268,15 @@ export interface PlanHandlers {
   onDegraded?: (reason: string) => void;
   onDone?: () => void;
   onError?: (err: Error) => void;
+}
+
+function nextSseSeparator(buffer: string): { index: number; length: number } | null {
+  const lf = buffer.indexOf("\n\n");
+  const crlf = buffer.indexOf("\r\n\r\n");
+  if (lf === -1 && crlf === -1) return null;
+  if (lf === -1) return { index: crlf, length: 4 };
+  if (crlf === -1) return { index: lf, length: 2 };
+  return crlf < lf ? { index: crlf, length: 4 } : { index: lf, length: 2 };
 }
 
 // EventSource 不能带 body/Authorization，改用 fetch POST + ReadableStream 解析 SSE。
@@ -288,8 +337,9 @@ export function streamPlan(
         body: JSON.stringify(req),
         signal: controller.signal,
       });
+      if (res.status === 401) clearToken();
       if (!res.ok || !res.body) {
-        throw new Error(`/plan/stream 返回 ${res.status}`);
+        throw new Error(await readErrorMessage(res, "/plan/stream 返回"));
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -298,18 +348,19 @@ export function streamPlan(
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        // SSE 事件以空行分隔
-        let sep: number;
-        while ((sep = buffer.indexOf("\n\n")) !== -1) {
-          const block = buffer.slice(0, sep);
-          buffer = buffer.slice(sep + 2);
+        // SSE 事件以空行分隔，兼容 LF 与 CRLF。
+        let sep = nextSseSeparator(buffer);
+        while (sep) {
+          const block = buffer.slice(0, sep.index);
+          buffer = buffer.slice(sep.index + sep.length);
           let event = "message";
           const dataLines: string[] = [];
-          for (const line of block.split("\n")) {
+          for (const line of block.split(/\r?\n/)) {
             if (line.startsWith("event:")) event = line.slice(6).trim();
             else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
           }
           if (dataLines.length) dispatch(event, dataLines.join("\n"));
+          sep = nextSseSeparator(buffer);
         }
       }
     } catch (err) {
@@ -341,18 +392,15 @@ export async function fetchCandidates(
   city: string,
   opts: { category?: Category; keyword?: string; limit?: number } = {},
 ): Promise<{ pois: POI[]; degraded: boolean }> {
-  const res = await fetch(`${API_BASE}/plan/candidates`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+  const body = await postJson<{ pois: Partial<POI>[]; degraded: boolean }>(
+    "/plan/candidates",
+    {
       city,
       category: opts.category ?? null,
       keyword: opts.keyword ?? "",
       limit: opts.limit ?? 8,
-    }),
-  });
-  if (!res.ok) throw new Error(`/plan/candidates 返回 ${res.status}`);
-  const body = (await res.json()) as { pois: Partial<POI>[]; degraded: boolean };
+    },
+  );
   return { pois: body.pois.map(toPoi), degraded: body.degraded };
 }
 
@@ -365,11 +413,8 @@ export async function suggestCity(
   freeText: string,
   history: ChatTurnPayload[] = [],
 ): Promise<{ reply: string; cities: CityOption[]; degraded: boolean }> {
-  const res = await fetch(`${API_BASE}/plan/suggest-city`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ free_text: freeText, history }),
-  });
-  if (!res.ok) throw new Error(`/plan/suggest-city 返回 ${res.status}`);
-  return res.json();
+  return postJson<{ reply: string; cities: CityOption[]; degraded: boolean }>(
+    "/plan/suggest-city",
+    { free_text: freeText, history },
+  );
 }

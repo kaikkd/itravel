@@ -31,8 +31,13 @@ _fail_log: dict[str, deque] = defaultdict(deque)
 _bearer = HTTPBearer(auto_error=False)
 
 
+def normalize_email(email: str) -> str:
+    """Return the canonical representation used for storage and lookups."""
+    return (email or "").strip().lower()
+
+
 def valid_email(email: str) -> bool:
-    return bool(_EMAIL_RE.match(email or ""))
+    return bool(_EMAIL_RE.match(normalize_email(email)))
 
 
 def valid_password(pw: str) -> bool:
@@ -68,6 +73,7 @@ def decode_token(token: str) -> int | None:
 
 def rate_limited(email: str) -> bool:
     """该邮箱在窗口内失败次数是否已达上限。"""
+    email = normalize_email(email)
     now = time.monotonic()
     log = _fail_log[email]
     while log and now - log[0] > _WINDOW:
@@ -76,11 +82,11 @@ def rate_limited(email: str) -> bool:
 
 
 def record_failure(email: str) -> None:
-    _fail_log[email].append(time.monotonic())
+    _fail_log[normalize_email(email)].append(time.monotonic())
 
 
 def reset_failures(email: str) -> None:
-    _fail_log.pop(email, None)
+    _fail_log.pop(normalize_email(email), None)
 
 
 def get_current_user(
@@ -105,4 +111,4 @@ def get_current_user(
 
 
 def get_user_by_email(session: Session, email: str) -> User | None:
-    return session.exec(select(User).where(User.email == email)).first()
+    return session.exec(select(User).where(User.email == normalize_email(email))).first()
