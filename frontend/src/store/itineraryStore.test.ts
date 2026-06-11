@@ -105,4 +105,57 @@ describe("itineraryStore", () => {
     useTemporalStore.getState().undo();
     expect(useItineraryStore.getState().itinerary!.days[0].stops.length).toBe(2);
   });
+
+  it("setSkeleton builds an empty shell and applyDay fills it", () => {
+    useItineraryStore.getState().startStreaming();
+    useItineraryStore.getState().setSkeleton({
+      city: "成都",
+      day_count: 2,
+      days: [
+        { day_index: 1, slots: ["breakfast", "attraction", "hotel"] },
+        { day_index: 2, slots: ["breakfast", "attraction", "hotel"] },
+      ],
+    });
+    let it = useItineraryStore.getState().itinerary!;
+    expect(it.days.length).toBe(2);
+    expect(it.days.every((d) => d.stops.length === 0)).toBe(true);
+
+    useItineraryStore.getState().applyDay({
+      id: -100,
+      day_index: 1,
+      stops: [
+        {
+          id: -101,
+          order_index: 1,
+          arrive_time: "08:00",
+          stay_minutes: 45,
+          poi: poi("早餐店", 104.05, 30.65),
+        },
+      ],
+      transits: [],
+    });
+    it = useItineraryStore.getState().itinerary!;
+    expect(it.days[0].stops.length).toBe(1);
+    expect(it.days[1].stops.length).toBe(0);
+  });
+
+  it("setTransitMode resets result and applyTransitResult writes it back", () => {
+    useItineraryStore.getState().selectCandidate(poi("C", 104.08, 30.68), 1);
+    const day = useItineraryStore.getState().itinerary!.days[0];
+    const transitId = day.transits[0].id;
+    useItineraryStore.getState().setTransitMode(day.id, transitId, "transit");
+    let t = useItineraryStore
+      .getState()
+      .itinerary!.days[0].transits.find((x) => x.id === transitId)!;
+    expect(t.mode).toBe("transit");
+    expect(t.duration_seconds).toBeNull();
+    useItineraryStore.getState().applyTransitResult(day.id, transitId, {
+      duration_seconds: 600,
+      distance_meters: 3000,
+    });
+    t = useItineraryStore
+      .getState()
+      .itinerary!.days[0].transits.find((x) => x.id === transitId)!;
+    expect(t.duration_seconds).toBe(600);
+  });
 });

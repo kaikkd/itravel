@@ -8,6 +8,7 @@ import {
 } from "../api/client";
 
 // 鉴权状态（PRD §5.4）：token 持久化于 localStorage，user 内存态。
+// 访客可完整规划；登录仅在用户主动点击或保存计划时触发（无静默登录）。
 
 interface AuthUser {
   id: number;
@@ -20,7 +21,7 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
   logout: () => void;
-  loadMe: () => Promise<void>;
+  bootstrap: () => Promise<void>;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
@@ -40,8 +41,14 @@ export const useAuthStore = create<AuthState>((set) => ({
     clearToken();
     set({ user: null });
   },
-  loadMe: async () => {
-    const me = await getMe();
-    set({ user: me, loading: false });
+  // 仅尝试用已存 token 恢复会话；无 token / 失效则保持访客态。
+  bootstrap: async () => {
+    set({ loading: true });
+    try {
+      const me = await getMe();
+      set({ user: me, loading: false });
+    } catch {
+      set({ loading: false });
+    }
   },
 }));

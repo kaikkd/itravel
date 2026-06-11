@@ -2,7 +2,7 @@ import json
 import logging
 from collections.abc import Iterator
 
-from app import amap_stub, workflow
+from app import amap_stub, llm, validators, workflow
 from app.schemas import ItineraryCreate
 
 logger = logging.getLogger(__name__)
@@ -10,20 +10,6 @@ logger = logging.getLogger(__name__)
 
 def sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
-def poi_dicts(pois) -> list[dict]:
-    return [
-        {
-            "name": p.name,
-            "category": p.category,
-            "lng": p.lng,
-            "lat": p.lat,
-            "address": p.address,
-            "rec_reason": p.rec_reason,
-        }
-        for p in pois
-    ]
 
 
 def synth_tree(draft: ItineraryCreate) -> dict:
@@ -112,27 +98,197 @@ def synth_tree(draft: ItineraryCreate) -> dict:
     }
 
 
-def stream_plan_events(query: str) -> Iterator[str]:
-    yield sse("status", {"text": "解析意图…"})
-    intent = workflow.parse_intent(query)
-    yield sse("intent", {"city": intent.city, "day_count": intent.day_count})
+def _clip_reply(reply: str | None, fallback: str) -> str:
+    text = reply.strip().replace("\n", " ") if isinstance(reply, str) else ""
+    if not text:
+        return fallback
+    return text if len(text) <= 60 else text[:59] + "…"
 
-    skeleton = amap_stub.hot_pois(intent.city, limit=max(intent.day_count * 2, 3))
-    yield sse("skeleton", {"pois": poi_dicts(skeleton)})
 
-    yield sse("status", {"text": "AI 规划中…"})
-    try:
-        pois, degraded = workflow.recommend_pois(intent)
-    except Exception:
-        logger.exception("plan_recommend_failed city=%s", intent.city)
-        pois, degraded = amap_stub.hot_pois(intent.city), True
+# 时间轴骨架槽位（不调 LLM，用于 TTFP ≤5s 首屏占位）。
+_SKELETON_SLOTS = ["breakfast", "attraction", "lunch", "attraction", "dinner", "hotel"]
+
+
+def _skeleton(intent: workflow.Intent) -> dict:
+    return {
+        "city": intent.city,
+        "day_count": intent.day_count,
+        "days": [
+            {"day_index": i, "slots": list(_SKELETON_SLOTS)}
+            for i in range(1, intent.day_count + 1)
+        ],
+    }
+
+
+def _skeleton_for(city: str, day_count: int) -> dict:
+    return {
+        "city": city,
+        "day_count": day_count,
+        "days": [
+            {"day_index": i, "slots": list(_SKELETON_SLOTS)}
+            for i in range(1, day_count + 1)
+        ],
+    }
+
+
+def stream_plan_events(req) -> Iterator[str]:
+    """每日全景时间轴流式规划。req 为 PlanStreamIn。
+
+    plan_source=day_count（默认）：按指定天数规划。
+    plan_source=poi_list：基于用户已选 POI + 节奏，先让 LLM 估天数再排程（#11）。
+    """
+    from_pois = getattr(req, "plan_source", "day_count") == "poi_list"
+    yield sse("status", {"text": "理解你的需求…"})
+    intent = workflow.build_intent(req)
+    yield sse(
+        "intent",
+        {
+            "city": intent.city,
+            "day_count": intent.day_count,
+            "preferences": intent.preferences,
+        },
+    )
+
+    if from_pois:
+        # 天数未知，先规划拿到估算天数，再据此发骨架。
+        yield sse("status", {"text": "AI 估算天数并编排…"})
+        try:
+            days, est_days, degraded = workflow.recommend_plan_from_pois(req)
+        except Exception:
+            logger.exception("plan_from_pois_failed city=%s", intent.city)
+            days, est_days = workflow._fallback_plan_from_pois(req, intent)
+            degraded = True
+        yield sse("estimate", {"day_count": est_days})
+        yield sse("skeleton", _skeleton_for(intent.city, max(len(days), 1)))
+    else:
+        yield sse("skeleton", _skeleton(intent))
+        yield sse("status", {"text": "AI 规划中…"})
+        try:
+            days, degraded = workflow.recommend_plan(req)
+        except Exception:
+            logger.exception("plan_recommend_failed city=%s", intent.city)
+            days, degraded = workflow._fallback_plan(intent), True
+
     if degraded:
         logger.info("plan_degraded reason=llm_unavailable_or_invalid city=%s", intent.city)
         yield sse("degraded", {"reason": "llm_unavailable_or_invalid"})
 
-    buckets = workflow.route_and_split(pois, intent)
-    draft = workflow.assemble_draft(intent, buckets)
+    ordered = [workflow.order_day_stops(d) for d in days]
+    draft = workflow.assemble_draft(req, ordered)
+    tree = synth_tree(draft)
 
-    yield sse("status", {"text": "生成行程…"})
-    yield sse("itinerary", synth_tree(draft))
-    yield sse("done", {})
+    llm_reply = getattr(days[0], "_reply", None) if days else None
+    day_n = len(tree["days"])
+    fallback_reply = (
+        f"AI 暂不可用，先用「{intent.city}」热门地点为你拼了行程，可在左侧调整。"
+        if degraded
+        else f"已为你排好「{intent.city}」{day_n} 天的行程，含吃住玩，左侧可微调。"
+    )
+    yield sse("reply", {"text": _clip_reply(llm_reply, fallback_reply)})
+
+    for day in tree["days"]:
+        yield sse("day", day)
+    yield sse("itinerary", tree)
+    yield sse("done", {"itinerary_id": None})
+
+
+# ---- 景点候选（route_first 选景点板，#11）----
+
+_CATEGORY_CN = {"eat": "餐饮美食", "stay": "酒店住宿", "play": "景点/体验"}
+
+
+def _poi_out(p) -> dict:
+    return {
+        "name": p.name,
+        "category": p.category,
+        "lng": p.lng,
+        "lat": p.lat,
+        "address": p.address,
+        "rec_reason": p.rec_reason,
+    }
+
+
+def candidate_pois(
+    *, city: str, category: str | None, keyword: str, limit: int
+) -> dict:
+    """LLM 按城市+类型推荐知名候选；失败/空回退高德桩。返回 {pois, degraded}。"""
+    cat_cn = _CATEGORY_CN.get(category or "play", "知名景点与体验")
+    kw = f"，偏好关键词：{keyword}" if keyword else ""
+    system = (
+        "你是中国境内旅游推荐助手。只输出 JSON，不要任何解释或 markdown 代码块。"
+        '输出格式：{"pois":[{"name":str,"category":"eat|stay|play","lng":number,'
+        '"lat":number,"address":str,"rec_reason":str}]}。'
+        "lng/lat 必须是高德 GCJ-02 真实坐标且在中国境内；rec_reason ≤50 字。"
+    )
+    user = (
+        f"请推荐「{city}」最值得去的 {cat_cn} {limit} 个{kw}，"
+        "按知名度/口碑排序，覆盖代表性地点。"
+    )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+    try:
+        buf = "".join(llm.stream_chat(messages, max_tokens=2000))
+        data = workflow._extract_json(buf)
+        raw = data.get("pois", []) if isinstance(data, dict) else []
+        pois = validators.validate_llm_pois(raw)
+        if category:
+            same = [p for p in pois if p.category == category]
+            pois = same or pois  # 类目过滤，过滤空则不强制
+        if pois:
+            return {"pois": [_poi_out(p) for p in pois[:limit]], "degraded": False}
+    except Exception:
+        logger.info("candidates_degraded city=%s category=%s", city, category)
+    stub = amap_stub.candidates(city, category or "play", limit=limit)
+    return {"pois": [_poi_out(p) for p in stub], "degraded": True}
+
+
+# ---- 候选城市（route_first path B 选城，#11）----
+
+
+def suggest_city(*, free_text: str, history: list) -> dict:
+    """LLM 按兴趣/景点类型推荐候选城市；失败回退常见城市。返回 {reply, cities, degraded}。"""
+    system = (
+        "你是中国境内旅游目的地推荐助手。只输出 JSON，不要任何解释或 markdown 代码块。"
+        '输出格式：{"reply":str,"cities":[{"name":str,"reason":str}]}。'
+        "reply 是一句话中文回复（≤40 字）；推荐 3-5 个中国城市，name 为城市名（如「成都」），"
+        "reason 说明为何契合用户兴趣（≤30 字）。"
+    )
+    messages = [{"role": "system", "content": system}]
+    for turn in history or []:
+        role = getattr(turn, "role", "user")
+        messages.append({"role": role, "content": getattr(turn, "content", "")})
+    messages.append(
+        {"role": "user", "content": f"我的旅行兴趣/想看的景点类型：{free_text or '随便逛逛'}。请推荐合适的城市。"}
+    )
+    try:
+        buf = "".join(llm.stream_chat(messages, max_tokens=800))
+        data = workflow._extract_json(buf)
+        cities = data.get("cities") if isinstance(data, dict) else None
+        if isinstance(cities, list) and cities:
+            clean = [
+                {"name": str(c.get("name", "")).strip(), "reason": str(c.get("reason", "")).strip()}
+                for c in cities
+                if isinstance(c, dict) and str(c.get("name", "")).strip()
+            ]
+            if clean:
+                reply = _clip_reply(
+                    data.get("reply") if isinstance(data, dict) else None,
+                    "为你挑了几个合适的城市，点选一个继续。",
+                )
+                return {"reply": reply, "cities": clean[:5], "degraded": False}
+    except Exception:
+        logger.info("suggest_city_degraded")
+    # 兜底：常见目的地
+    fallback = [
+        {"name": "成都", "reason": "美食与休闲都很丰富"},
+        {"name": "杭州", "reason": "山水人文兼具"},
+        {"name": "西安", "reason": "历史古迹集中"},
+        {"name": "重庆", "reason": "山城夜景与火锅"},
+    ]
+    return {
+        "reply": "AI 暂不可用，先给你几个热门城市参考。",
+        "cities": fallback,
+        "degraded": True,
+    }

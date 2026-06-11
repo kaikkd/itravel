@@ -1,17 +1,43 @@
 # 智能旅游规划伴侣（Smart Travel Planner Agent）
 
 重「行程规划与可视化」、弱「AI 纯文本聊天」的 Web 端智能旅游规划 Agent。
+界面对齐 Claude.com 设计语言（米白底 + 赤陶主色 + 衬线标题），用「分步决策 → 卡片/地图/日程」帮用户把吃住行定下来，聊天只作简短辅助。
+
 产品规格见 [`docs/prd.md`](docs/prd.md)，技术方案见 [`docs/dev_doc.md`](docs/dev_doc.md)。
 
-> 当前进度：**M6 本地跑通完成**（M0 脚手架 → M1 数据骨架 → M2 LLM 草案链路 → M3 三视图与交互 → M4 增量重算与竞态 → M5 鉴权与保存 → M6 测试收尾）。达成 dev_doc §9.5「本地跑通」完成定义。
+## 核心体验
+
+访客无需登录即可完整规划（登录仅在主动点击右上角用户按钮或「保存计划」时触发）：
+
+```
+入口（两个上升悬浮框）
+  ├─ 大交通 / 往返日期优先 ── 先选机票（曲线飞行动画）→ 确认 → 转为行程表
+  └─ 游玩景点 / 顺路路线优先 ─┐
+                              ↓
+选择城市（出发 / 目的 / 返回，多选）+ 离线中国省份地图按省高亮
+  ↓
+工作台：左「行程表 + 对话区」 · 右「标准地图」（可折叠）
+  ↓
+和 itravel 聊天 → 后端流式 SSE 规划 → 骨架屏占位 → 逐天填充「每日全景时间轴」
+  ↓
+每天 = 三餐(吃) + 2~3 景点(玩，顺路排序) + 当晚酒店(住) + 段间交通耗时
+  ↓
+拖拽卡片重排（⌘/Ctrl+Z 撤销）；切换 驾车/公共交通/步行 → 地图打点连线并标注时长
+  ↓
+点「保存计划」：访客先登录/注册，再绑定账号持久化；「我的行程」可载入继续编辑
+```
+
+- 单一数据源（SSOT）：行程树是唯一权威状态，日程表 / 地图 / 对话均为其只读投影。
+- 对话区：保留多轮气泡历史，AI 一句话回复 + 可折叠的「计划改动」卡（展示本轮新增了哪些地点）。
+- 工作台地图可折叠：行程表与地图间的按钮收起地图、左侧铺满居中；右下角浮标可重新展开。
+- 三态与动效：骨架屏 + 逐天流式填充；卡片层叠落入、对话气泡进场、时间轴连线生长、保存 Toast；进入工作台中心「浮尘吹散」一次性提示，对话框 AI 执行中匀速呼吸。
 
 ## 技术栈
 
-- 前端：React + Vite + TypeScript（状态管理 Zustand + Immer；撤销 zundo；拖拽 dnd-kit）
-- 后端：Python + FastAPI + SQLModel + SQLite，`uv` 管理环境
-- LLM：OpenAI 兼容 / Azure OpenAI（SSE 流式），凭证经 `.env` 注入
-- 地图：高德 JS API 2.0（地图打点/驾车路线）；交通重算走高德 Web 服务 API（缺 key 时 haversine 估算）
-- 鉴权：argon2id 密码哈希 + JWT（HS256），登录失败限频
+- 前端：React + Vite + TypeScript；Zustand（流程 / 行程 SSOT+zundo 撤销 / 对话 / 机票 / UI）；@dnd-kit 拖拽；Tailwind v4 + shadcn 风格组件；lucide-react 图标；高德 JS API 2.0（标准图层）。
+- 后端：Python + FastAPI + SQLModel + SQLite，`uv` 管理环境。自研确定性 Workflow（意图→POI→顺路→交通→渲染）+ 完整系统提示词约束 LLM 产出每日时间轴。
+- LLM：OpenAI 兼容 / Azure OpenAI，凭证经 `.env` 注入；缺失/失败时自动回退高德桩候选（`degraded`，不白屏）。
+- 鉴权：argon2id 密码哈希 + JWT（HS256），登录失败限频；启动自动建表（无默认账号，访客可规划）。
 
 ## 环境准备
 
@@ -28,13 +54,12 @@
 ```bash
 cd backend
 uv sync                              # 创建 .venv 并安装依赖
-cp .env.example .env                 # 按需填写 LLM / 高德 凭证（本期可留空）
-uv run python -m app.init_db         # 建表（生成 data/app.db）
-uv run python -m app.seed            # 塞一条「成都三天」示例行程（可选）
+cp .env.example .env                 # 按需填写 LLM / 高德 凭证（可留空）
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
-测试：`uv run pytest`（CRUD / LLM 契约 / 候选 / 交通重算 / 鉴权用例，29 项）。
+启动钩子会自动建表（无需手动 `init_db`；无默认账号，访客可直接规划）。`uv run python -m app.seed` 可选，塞一条「成都三天」示例行程。
+测试：在 `backend` 目录执行 `uv run pytest`（CRUD / Workflow 契约 / 候选 / 交通 / 鉴权 / schema 校验，39 项）。
 
 ### 前端（终端 2）
 
@@ -42,74 +67,71 @@ uv run uvicorn app.main:app --reload --port 8000
 cd frontend
 npm install
 cp .env.example .env                 # VITE_API_BASE 默认 http://localhost:8000
-npm run dev                          # http://localhost:5173
+npm run dev                          # http://localhost:5173（被占用自动切 5174）
 ```
 
-测试：`npm test`（Store 勾选/删除/拖拽/撤销用例）；类型检查：`npx tsc -b`。
+测试：`npm test`；类型检查 + 构建：`npm run build`。
 
-## 鉴权与保存（M5）
+## 账号与登录
 
-- 首次使用先在页面顶部「注册」（邮箱 + 密码 ≥8 + 二次确认，前端即时校验），注册即自动登录。
-- 规划可不登录直接体验；「保存行程」需登录，保存后行程与账号绑定，刷新/重登仍在。
-- 密码用 argon2id 哈希入库（禁明文）；JWT 存浏览器 `localStorage`；登录失败 5 次/分钟触发限频。
-- `backend/.env` 的 `JWT_SECRET` 本地随便填长随机串；上线务必替换。
+- 无登录页、无默认账号：访客可完整体验规划流程（草案存于前端，不落库）。
+- 登录/注册（邮箱 + 密码，注册二次确认、密码 ≥8）仅在点击右上角用户按钮或「保存计划」时弹出。
+- 行程「保存」绑定登录账号持久化（要求 ≥1 天且 ≥3 个地点）；`backend/.env` 的 `JWT_SECRET` 本地随便填长随机串，上线务必替换。
 
-## 交通重算（M4）
+## LLM 配置
 
-- 拖拽改序/增删 Stop → 前端防抖 300ms 后只对受影响的相邻段调 `POST /transit/recompute`，进程内 `TTLCache` 缓存（键 `from_to_mode`，TTL 1h）。
-- 后端有服务端高德 `AMAP_KEY`（Web 服务 API，与前端 JS Key 是两类 Key）→ 真实驾车耗时/距离；否则 haversine 估算兜底（`degraded`）。
-- 竞态：请求带单调 seq，过期响应丢弃，最终态以 SSOT 为准；撤销 `Ctrl+Z` / 重做 `Ctrl+Shift+Z`。
-
-## LLM 配置（M2）
-
-在 `backend/.env` 填入凭证后，规划走真实 LLM；留空则自动降级为高德桩热门推荐（不白屏）。
+在 `backend/.env` 填入凭证后，聊天走真实 LLM 结构化候选；留空则自动回退内置候选（`degraded`）。
 
 - Azure OpenAI（如 ByteDance modelhub）：填 `AZURE_ENDPOINT` + `OPENAI_API_KEY` + `OPENAI_API_VERSION` + `OPENAI_MODEL`。
 - 标准 OpenAI 兼容：留空 `AZURE_ENDPOINT`，填 `OPENAI_BASE_URL` + `OPENAI_API_KEY` + `OPENAI_MODEL`。
-- 切换供应商只改 env，无需改代码（`app/llm.py` 按 `AZURE_ENDPOINT` 是否为空自动选客户端）。
+- 切换供应商只改 env（`app/llm.py` 按 `AZURE_ENDPOINT` 是否为空自动选客户端）。
+- 约束 LLM 产出「每日全景时间轴」的完整系统提示词在 [`backend/app/workflow.py`](backend/app/workflow.py) 的 `_PLAN_SYSTEM_PROMPT`。
 
-## 地图配置（M3）
+## 地图配置
 
 在 `frontend/.env` 填入高德 JS API 2.0 凭证后，右侧地图实时打点连线；留空则地图区降级为坐标列表（不白屏）。
 
 - 控制台 https://console.amap.com/dev/key/app → 应用管理 → 创建应用 → 添加 Key → 服务平台选「Web端(JS API)」。
-- 同时拿到 `VITE_AMAP_JS_KEY` 与安全密钥 `VITE_AMAP_SECURITY_CODE`（jscode，JS API 2.0 必填，否则地图不出图）。
+- 拿到 `VITE_AMAP_JS_KEY` 与安全密钥 `VITE_AMAP_SECURITY_CODE`（jscode，JS API 2.0 必填）。
+- 交通时长/路径由前端高德插件（`AMap.Driving/Walking/Transfer`）按需计算；后端 `AMAP_KEY` 为 `POST /transit/recompute` 兜底用。
+
+## API 一览
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/health` | 健康检查 |
+| POST | `/auth/register` `/auth/login`，GET `/auth/me` | 邮箱+密码鉴权（签发 JWT） |
+| POST（SSE） | `/plan/stream` | 流式规划「每日全景时间轴」：`status/intent/skeleton/reply/day/itinerary/done`，支持 `history` + `current_plan` 多轮修改 |
+| POST | `/transit/recompute` | 相邻交通段时长/距离兜底计算 |
+| GET/POST/DELETE | `/itineraries*` | 行程读写（需 Bearer，绑定用户） |
 
 ## 自检
 
-- `curl http://localhost:8000/health` 返回 `{"status":"ok"}`（HTTP 200）。
-- 鉴权：`curl -X POST .../auth/register -d '{"email":"a@b.com","password":"password123"}'` 得 token；`/itineraries` 不带 token → 401，带 `Authorization: Bearer <token>` → 本人列表。
-- 规划流（注意中文需 URL 编码，不落库、合成负 id 树）：
-  `curl -sN --get http://localhost:8000/plan/stream --data-urlencode 'q=成都耍三天'`
-  → 依次收到 `status → intent → skeleton → itinerary（≥3 POI）→ done`；LLM 不可用时多一个 `degraded`。
-- 候选卡片流：`curl --get .../poi/candidates --data-urlencode 'city=成都' --data-urlencode 'category=eat'` 即时返回桩候选；带 `regenerate=true` 调 LLM 重生成（含 `exclude` 去重）。
-- 交通重算：`curl -X POST .../transit/recompute -d '{"segments":[{"from_lng":104.04,"from_lat":30.64,"to_lng":104.06,"to_lat":30.66,"mode":"driving"}]}'` 返回 `distance_meters/duration_seconds/degraded`。
-
-### P0 GWT 验收清单（dev_doc §8.2）
-
-1. **路径B生成**：输入「成都耍三天」→ ≤5s 骨架、≤30s ≥3 POI 草案。
-2. **卡片勾选/剔除**：加入→入日程表+地图打点；剔除→该类目 LLM 重生成。
-3. **拖拽增量重算**：拖动改序 → 仅相邻段耗时/距离更新、地图轨迹同步、无全量请求。
-4. **空行程状态**：无 POI → 空态引导；地图无 key/无坐标 → 降级坐标列表。
-5. **接口超时降级**：LLM 失败 → 桩兜底 `degraded`；交通无 key → haversine 估算。
-6. **保存行程**：登录后保存置 saved，刷新/重登仍在。
-7. **登录鉴权**：正确密码签发凭证、行程绑定账号；两次密码不一致前端拦截；错误密码连续 5 次限频。
-
-> 契约校验（§6.3）当前覆盖 ①JSON schema ③推荐语 ≤50 码点 ④坐标范围；②「反查 amap_id 真实存在」因高德 POI 仍用桩，按既有口径跳过，待真接高德补齐。
+- `curl http://localhost:8000/health` → `{"status":"ok"}`。
+- 注册并登录：`curl -X POST .../auth/register -H 'Content-Type: application/json' -d '{"email":"you@example.com","password":"itravel123"}'` 得 token。
+- 流式规划：`curl -N -X POST .../plan/stream -H 'Content-Type: application/json' -d '{"destination":"成都","origin":"北京","day_count":2,"free_text":"想轻松逛吃"}'` → 一串 `event: status/intent/skeleton/reply/day/itinerary/done`。
 
 ## 目录结构
 
 ```
 itravel/
 ├── backend/         # FastAPI BFF（uv 管理）
-│   └── app/         # config / db / main / init_db / seed
-│       ├── models/  # SQLModel 行程 ER（Itinerary/Day/Stop/POI/Transit/Source）
-│       ├── schemas.py / crud.py
-│       ├── llm.py / validators.py / amap_stub.py / workflow.py  # M2 LLM 链路
-│       ├── transit.py / auth.py                                  # M4 重算 / M5 鉴权
-│       └── routers/ # itineraries / plan / poi / transit / auth 路由
-├── frontend/        # Vite + React + TS
-│   └── src/         # App / api/client / store(SSOT+auth) / hooks / components
+│   └── app/
+│       ├── config / db / main(lifespan 建表) / init_db / seed
+│       ├── models/ schemas.py / crud.py
+│       ├── llm.py / validators.py / amap_stub.py / workflow.py(含 _PLAN_SYSTEM_PROMPT)
+│       ├── auth.py / transit.py
+│       ├── services/   # plan(流式) / poi / transit / itinerary 业务层
+│       └── routers/    # auth / itineraries / plan / poi / transit
+├── frontend/        # Vite + React + TS + Tailwind
+│   └── src/
+│       ├── assets/chinaGeo.ts        # 离线中国省界（按省高亮）
+│       ├── lib/        # amap / cityCatalog / flights / planController(流式编排) / utils
+│       ├── store/      # planFlow / itinerary(SSOT) / chat / flight / auth / ui
+│       ├── components/flow/        # IntroGate / OriginDestinationStep / ChinaMap
+│       ├── components/workspace/   # WorkspaceLayout / ScheduleColumn / FlightBoard / ChatDock / MessageList / TripMap / TopNav / MyTripsDialog
+│       ├── components/auth/        # AuthDialog（登录/注册弹窗）
+│       └── components/ui/          # shadcn 风格基础组件
 └── docs/            # prd.md, dev_doc.md
 ```
 
@@ -117,5 +139,10 @@ itravel/
 
 密钥不入库、不进 Git，仅通过各自的 `.env` 注入（参考 `backend/.env.example`、`frontend/.env.example`）。
 
-- 后端：`DATABASE_URL`、`AZURE_ENDPOINT` / `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_API_VERSION` / `OPENAI_MODEL`、`AMAP_KEY`（Web 服务 API，供交通重算）、`JWT_SECRET`、`CORS_ORIGINS`
+- 后端：`DATABASE_URL`、`AZURE_ENDPOINT` / `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_API_VERSION` / `OPENAI_MODEL`、`AMAP_KEY`、`JWT_SECRET`、`CORS_ORIGINS`
 - 前端：`VITE_API_BASE`、`VITE_AMAP_JS_KEY`、`VITE_AMAP_SECURITY_CODE`
+
+## 说明
+
+- 机票、机场坐标、社媒来源等为 mock，仅用于流程演示；POI 候选优先真实 LLM、失败回退内置。
+- 暂不涉及线上部署（Nginx / HTTPS / Redis / 镜像），仅保证本地跑通。
