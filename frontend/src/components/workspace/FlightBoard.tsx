@@ -4,7 +4,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { outboundFlights, returnFlights } from "../../lib/flights";
 import { usePlanFlowStore } from "../../store/planFlowStore";
-import { useTripStore } from "../../store/tripStore";
+import { useFlightStore } from "../../store/flightStore";
 import type { Flight } from "../../types";
 
 function FlightRow({
@@ -66,11 +66,11 @@ function FlightRow({
 export default function FlightBoard() {
   const origin = usePlanFlowStore((s) => s.origin);
   const primaryDestination = usePlanFlowStore((s) => s.primaryDestination)();
-  const outbound = useTripStore((s) => s.outbound);
-  const returnFlight = useTripStore((s) => s.returnFlight);
-  const setOutbound = useTripStore((s) => s.setOutbound);
-  const setReturnFlight = useTripStore((s) => s.setReturnFlight);
-  const confirmFlights = useTripStore((s) => s.confirmFlights);
+  const outbound = useFlightStore((s) => s.outbound);
+  const returnFlight = useFlightStore((s) => s.returnFlight);
+  const setOutbound = useFlightStore((s) => s.setOutbound);
+  const setReturnFlight = useFlightStore((s) => s.setReturnFlight);
+  const confirmFlights = useFlightStore((s) => s.confirmFlights);
 
   const outList = useMemo(
     () => outboundFlights(origin, primaryDestination),

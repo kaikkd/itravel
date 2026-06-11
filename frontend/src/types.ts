@@ -65,57 +65,38 @@ export interface ItinerarySummary {
   day_count: number;
 }
 
-// ---- 结构化候选（POST /plan/suggestions） ----
+// ---- 流式规划（POST /plan/stream，SSE） ----
 
-export interface SuggestionPoi {
-  name: string;
-  category: Category;
-  lng: number | null;
-  lat: number | null;
-  address: string | null;
-  rec_reason: string | null;
-}
+// 时间轴槽位（吃住玩一等公民）。
+export type Slot = "breakfast" | "lunch" | "dinner" | "attraction" | "hotel";
 
-export interface SuggestionDay {
+export interface PlanSkeletonDay {
   day_index: number;
-  candidates: SuggestionPoi[];
+  slots: Slot[];
 }
 
-export interface SuggestionResponse {
+export interface PlanSkeleton {
   city: string;
   day_count: number;
-  reply: string;
-  days: SuggestionDay[];
-  degraded: boolean;
+  days: PlanSkeletonDay[];
 }
 
-// ---- 行程工作台（前端 trip store） ----
+// ---- 对话（前端 chat store） ----
 
-export interface SlotPoi {
-  name: string;
-  category: Category;
-  lng: number | null;
-  lat: number | null;
-  address: string | null;
-  rec_reason: string | null;
+export interface PlanChange {
+  // AI 本轮对计划的改动摘要（折叠卡）
+  city: string;
+  dayCount: number;
+  added: { dayIndex: number; names: string[] }[];
+  totalStops: number;
 }
 
-export interface SlotTransit {
-  mode: TransitMode;
-  durationSeconds: number | null;
-  distanceMeters: number | null;
-  showPath: boolean;
-}
-
-export interface TripSlot {
+export interface ChatMessage {
   id: string;
-  poi: SlotPoi | null;
-}
-
-export interface TripDay {
-  dayIndex: number;
-  label: string;
-  slots: TripSlot[];
+  role: "user" | "assistant";
+  content: string;
+  pending?: boolean; // 助手消息流式生成中
+  change?: PlanChange; // 助手消息附带的计划改动折叠卡
 }
 
 // ---- 机票（mock，用于交通优先与飞行动画） ----

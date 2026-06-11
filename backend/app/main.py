@@ -4,11 +4,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlmodel import Session
 
-from app import auth
 from app.config import settings
-from app.db import engine, init_db
+from app.db import init_db
 from app.routers import auth as auth_router
 from app.routers import itineraries, plan, poi, transit
 
@@ -21,11 +19,9 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # 启动即建表 + 确保默认管理员存在（无登录页方案）。
+    # 启动即建表（访客可规划，登录仅在保存时触发，无默认账号）。
     try:
         init_db()
-        with Session(engine) as session:
-            auth.ensure_default_admin(session)
     except Exception:
         logger.exception("startup_bootstrap_failed")
     yield

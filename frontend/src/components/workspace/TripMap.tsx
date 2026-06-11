@@ -2,43 +2,46 @@ import { useEffect, useRef, useState } from "react";
 import { MapPinned } from "lucide-react";
 import { AMapNotConfigured, isAMapConfigured, loadAMap } from "../../lib/amap";
 import { findCity } from "../../lib/cityCatalog";
-import { useTripStore, transitKey } from "../../store/tripStore";
+import { useItineraryStore } from "../../store/itineraryStore";
+import { useFlightStore } from "../../store/flightStore";
 import { usePlanFlowStore } from "../../store/planFlowStore";
-import type { SlotPoi, TransitMode, TripDay } from "../../types";
+import type { Day, Transit, TransitMode } from "../../types";
 
 type AMapAny = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 interface FilledStop {
-  dayIndex: number;
-  slotId: string;
+  stopId: number;
   order: number;
-  poi: SlotPoi & { lng: number; lat: number };
+  name: string;
+  lng: number;
+  lat: number;
 }
 
-const MODE_COLOR: Record<TransitMode, string> = {
+const MODE_COLOR: Record<string, string> = {
   driving: "#c96442",
   transit: "#3f6f8f",
   walking: "#4f7a5b",
 };
 
-const MODE_LABEL: Record<TransitMode, string> = {
+const MODE_LABEL: Record<string, string> = {
   driving: "驾车",
   transit: "公共交通",
   walking: "步行",
 };
 
-function filledStops(days: TripDay[]): FilledStop[] {
+function filledStops(days: Day[]): FilledStop[] {
   const out: FilledStop[] = [];
   let order = 0;
   for (const day of days) {
-    for (const slot of day.slots) {
-      if (slot.poi && slot.poi.lng != null && slot.poi.lat != null) {
+    for (const stop of day.stops) {
+      if (stop.poi.lng != null && stop.poi.lat != null) {
         order += 1;
         out.push({
-          dayIndex: day.dayIndex,
-          slotId: slot.id,
+          stopId: stop.id,
           order,
-          poi: slot.poi as SlotPoi & { lng: number; lat: number },
+          name: stop.poi.name,
+          lng: stop.poi.lng,
+          lat: stop.poi.lat,
         });
       }
     }
@@ -87,14 +90,11 @@ function bezierArc(
   return pts;
 }
 
-// 屏幕旋转角：地图纬度向上而 CSS rotate 顺时针(y 向下)，需取负把数学角转成屏幕角。
-// 朝东(0°)的纸飞机按此角旋转后，机头即对准航班前进方向。
 function bearingDeg(a: [number, number], b: [number, number]): number {
   return (-Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI;
 }
 
 function planeContent(angleDeg: number): string {
-  // 朝东(0°)的俯视客机剪影，按航向旋转。
   return `
     <div style="transform:translate(-50%,-50%) rotate(${angleDeg}deg);filter:drop-shadow(0 3px 6px rgba(60,45,30,.35));">
       <svg width="30" height="30" viewBox="0 0 32 32">
@@ -105,15 +105,16 @@ function planeContent(angleDeg: number): string {
 }
 
 export default function TripMap({ collapsed = false }: { collapsed?: boolean }) {
-  const days = useTripStore((s) => s.days);
-  const transits = useTripStore((s) => s.transits);
-  const outbound = useTripStore((s) => s.outbound);
-  const returnFlight = useTripStore((s) => s.returnFlight);
-  const flightsConfirmed = useTripStore((s) => s.flightsConfirmed);
-  const setTransitResult = useTripStore((s) => s.setTransitResult);
+  const itinerary = useItineraryStore((s) => s.itinerary);
+  const applyTransitResult = useItineraryStore((s) => s.applyTransitResult);
+  const outbound = useFlightStore((s) => s.outbound);
+  const returnFlight = useFlightStore((s) => s.returnFlight);
+  const flightsConfirmed = useFlightStore((s) => s.flightsConfirmed);
   const mode = usePlanFlowStore((s) => s.mode);
   const origin = usePlanFlowStore((s) => s.origin);
   const primaryDestination = usePlanFlowStore((s) => s.primaryDestination)();
+
+  const days = itinerary?.days ?? [];
 
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<AMapAny>(null);
@@ -130,7 +131,7 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
   const [reopenNonce, setReopenNonce] = useState(0);
   const [loadError, setLoadError] = useState("");
 
-  // 展开时（折叠→展开）等宽度过渡结束后 resize + 触发一次重绘刷新。
+  // 展开时等宽度过渡结束后 resize + 触发一次重绘刷新。
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready || collapsed) return;
@@ -141,7 +142,7 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     return () => clearTimeout(t);
   }, [collapsed, ready]);
 
-  // 初始化标准图层地图（非卫星）。
+  // 初始化标准图层地图。
   useEffect(() => {
     if (!isAMapConfigured()) {
       setLoadError("地图未配置 Key，已降级为坐标列表。");
@@ -183,7 +184,6 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     const AMap = amapRef.current;
     if (!map || !AMap || !ready || collapsed) return;
 
-    // 确认机票或离开交通优先 → 清除航线与飞机。
     if (mode !== "traffic_first" || flightsConfirmed) {
       if (flightOverlaysRef.current.length) {
         map.remove(flightOverlaysRef.current);
@@ -207,7 +207,6 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
       });
     }
     if (returnFlight) {
-      // 返程方向已反向，相同 sign 即弯向相反侧，两条弧不重叠。
       legs.push({
         id: returnFlight.id,
         from: [toAir.lng, toAir.lat],
@@ -233,7 +232,6 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, collapsed, mode, flightsConfirmed, outbound?.id, returnFlight?.id, origin, primaryDestination]);
 
-  // 卸载时取消所有动画帧。
   useEffect(() => {
     return () => {
       rafIdsRef.current.forEach((id) => cancelAnimationFrame(id));
@@ -260,7 +258,6 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     const plane = new AMap.Marker({
       position: pts[0],
       content: planeContent(bearingDeg(pts[0], pts[1])),
-      // 向上偏移，让飞机悬浮在航线上方而非压线。
       offset: new AMap.Pixel(0, -14),
       zIndex: 200,
     });
@@ -282,7 +279,6 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
         rafIdsRef.current.push(requestAnimationFrame(tick));
         return;
       }
-      // 到达后：飞机消失，改在航线上方（弧顶）静态显示。
       map.remove(plane);
       const apexIndex = Math.floor(pts.length / 2);
       const apex = pts[apexIndex];
@@ -309,12 +305,12 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     }
   }, [ready, flightsConfirmed, mode, primaryDestination]);
 
-  // 行程打点 + 按需路径渲染。
+  // 行程打点 + 路径渲染（每段都渲染所选小交通）。
   useEffect(() => {
     const map = mapRef.current;
     const AMap = amapRef.current;
     if (!map || !AMap || !ready) return;
-    if (collapsed) return; // 折叠期间不再根据行程表更新
+    if (collapsed) return;
     if (mode === "traffic_first" && !flightsConfirmed) return;
 
     const seq = ++drawSeqRef.current;
@@ -324,8 +320,8 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     const stops = filledStops(days);
     for (const stop of stops) {
       const marker = new AMap.Marker({
-        position: [stop.poi.lng, stop.poi.lat],
-        content: pinContent(stop.order, stop.poi.name),
+        position: [stop.lng, stop.lat],
+        content: pinContent(stop.order, stop.name),
         offset: new AMap.Pixel(0, 0),
       });
       overlaysRef.current.push(marker);
@@ -335,39 +331,48 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
       map.setFitView(overlaysRef.current, false, [80, 80, 80, 80]);
     }
 
-    // 按天相邻 filled 段：仅当 showPath 时渲染路径并标注方式+时长。
+    // 按天相邻 filled 段：渲染路径并标注方式+时长，结果回写 SSOT。
     for (const day of days) {
-      const dayStops = day.slots.filter(
-        (s) => s.poi && s.poi.lng != null && s.poi.lat != null,
+      const dayStops = day.stops.filter(
+        (s) => s.poi.lng != null && s.poi.lat != null,
       );
       for (let i = 0; i < dayStops.length - 1; i++) {
         const from = dayStops[i];
         const to = dayStops[i + 1];
-        const t = transits[transitKey(day.dayIndex, from.id)];
-        if (!t || !t.showPath) continue;
-        const fromPt: [number, number] = [from.poi!.lng!, from.poi!.lat!];
-        const toPt: [number, number] = [to.poi!.lng!, to.poi!.lat!];
-        drawSegment(seq, day.dayIndex, from.id, t.mode, fromPt, toPt);
+        const transit = day.transits.find(
+          (t) => t.from_stop_id === from.id && t.to_stop_id === to.id,
+        );
+        if (!transit) continue;
+        const fromPt: [number, number] = [from.poi.lng!, from.poi.lat!];
+        const toPt: [number, number] = [to.poi.lng!, to.poi.lat!];
+        drawSegment(seq, transit, fromPt, toPt);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, collapsed, reopenNonce, days, transits, mode, flightsConfirmed]);
+  }, [ready, collapsed, reopenNonce, itinerary, mode, flightsConfirmed]);
 
   function drawSegment(
     seq: number,
-    dayIndex: number,
-    fromSlotId: string,
-    transitMode: TransitMode,
+    transit: Transit,
     from: [number, number],
     to: [number, number],
   ) {
     const AMap = amapRef.current;
     const map = mapRef.current;
     if (!AMap || !map) return;
+    const transitMode = (transit.mode as TransitMode) ?? "driving";
+    const dayId =
+      itinerary?.days.find((d) => d.transits.some((t) => t.id === transit.id))?.id ?? 0;
     const sig = `${from[0]},${from[1]}->${to[0]},${to[1]}:${transitMode}`;
     const cached = pathCacheRef.current.get(sig);
     if (cached) {
       paintSegment(transitMode, cached.path, from, to);
+      if (transit.duration_seconds == null) {
+        applyTransitResult(dayId, transit.id, {
+          duration_seconds: cached.duration,
+          distance_meters: cached.distance,
+        });
+      }
       return;
     }
 
@@ -379,9 +384,9 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
       pathCacheRef.current.set(sig, { path, duration, distance });
       if (seq !== drawSeqRef.current) return;
       paintSegment(transitMode, path, from, to);
-      setTransitResult(dayIndex, fromSlotId, {
-        durationSeconds: duration,
-        distanceMeters: distance,
+      applyTransitResult(dayId, transit.id, {
+        duration_seconds: duration,
+        distance_meters: distance,
       });
     };
 
@@ -402,7 +407,6 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
         const transfer = new AMap.Transfer({ city: primaryDestination || "全国" });
         transfer.search(from, to, (_status: string, result: AMapAny) => {
           const plan = result?.plans?.[0];
-          // 地铁/公交路径在地下，用直连虚线 + 真实换乘时长。
           onResult([from, to], plan?.time ?? null, plan?.distance ?? null);
         });
       } else {
@@ -439,7 +443,6 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
       strokeColor: color,
       strokeWeight: isTransit ? 4 : 5,
       strokeOpacity: 0.9,
-      // 公共交通：圆头等距小圆点，替代难看的大虚线。
       strokeStyle: isTransit ? "dashed" : "solid",
       strokeDasharray: isTransit ? [2, 12] : undefined,
       lineJoin: "round",
@@ -449,10 +452,7 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     map.add(line);
     overlaysRef.current.push(line);
 
-    const mid: [number, number] = [
-      (from[0] + to[0]) / 2,
-      (from[1] + to[1]) / 2,
-    ];
+    const mid: [number, number] = [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2];
     const label = new AMap.Text({
       text: MODE_LABEL[transitMode],
       position: mid,
@@ -482,8 +482,8 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
         ) : (
           <ul className="w-full max-w-sm space-y-1 text-left text-sm text-stone">
             {stops.map((s) => (
-              <li key={s.slotId}>
-                {s.order}. {s.poi.name}（{s.poi.lng.toFixed(3)}, {s.poi.lat.toFixed(3)}）
+              <li key={s.stopId}>
+                {s.order}. {s.name}（{s.lng.toFixed(3)}, {s.lat.toFixed(3)}）
               </li>
             ))}
           </ul>

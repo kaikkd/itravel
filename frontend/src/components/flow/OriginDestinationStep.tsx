@@ -8,7 +8,6 @@ import {
   searchCities,
 } from "../../lib/cityCatalog";
 import { usePlanFlowStore, type PlaceRole } from "../../store/planFlowStore";
-import { useTripStore } from "../../store/tripStore";
 
 const ROLE_LABEL: Record<PlaceRole, string> = {
   origin: "出发地",
@@ -27,9 +26,7 @@ export default function OriginDestinationStep() {
     setReturnCity,
     setDayCount,
     goPhase,
-    primaryDestination,
   } = usePlanFlowStore();
-  const initDays = useTripStore((s) => s.initDays);
 
   const [role, setRole] = useState<PlaceRole>("origin");
   const [query, setQuery] = useState("");
@@ -64,7 +61,6 @@ export default function OriginDestinationStep() {
   function start() {
     if (!canStart || leaving) return;
     if (!returnCity) setReturnCity(origin);
-    initDays(primaryDestination(), dayCount);
     setLeaving(true);
     window.setTimeout(() => goPhase("workspace"), 560);
   }

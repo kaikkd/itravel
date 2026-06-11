@@ -13,24 +13,30 @@ from app.schemas import (
 )
 
 # 自研轻量确定性 Workflow（PRD §7.3）：意图→POI→顺路→交通→渲染。
-# 每个节点纯函数、可独立测试、可降级。
+# 每个节点纯函数、可独立测试、可降级。LLM 只产出「每日全景时间轴」结构化 JSON，
+# 顺路排序 / 交通估算 / 契约校验 / 降级回填均由确定性 Python 完成。
+
+
+# ---- 意图 ----
 
 
 @dataclass
 class Intent:
     city: str
     day_count: int
+    origin: str = ""
+    return_city: str = ""
     preferences: list[str] = field(default_factory=list)
     raw: str = ""
 
 
 _CN_NUM = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7}
-# 简单城市词典；未命中时取「XX耍/玩/游」前缀或默认成都
 _KNOWN_CITIES = ["成都", "重庆", "北京", "上海", "杭州", "西安", "广州", "深圳", "昆明"]
+_PREF_KEYWORDS = ("辣", "美食", "亲子", "文艺", "购物", "自然", "历史", "轻松", "小众")
 
 
 def parse_intent(query: str) -> Intent:
-    """启发式抽取 city + 天数，缺失给默认（成都 / 3 天）。"""
+    """启发式抽取 city + 天数 + 偏好；用于无结构化输入或补挖 free_text 关键词。"""
     q = (query or "").strip()
     city = next((c for c in _KNOWN_CITIES if c in q), "")
     if not city:
@@ -47,31 +53,119 @@ def parse_intent(query: str) -> Intent:
             day_count = _CN_NUM.get(m.group(1), 3)
     day_count = max(1, min(day_count, 10))
 
-    prefs: list[str] = []
-    for kw in ("辣", "美食", "亲子", "文艺", "购物", "自然", "历史"):
-        if kw in q:
-            prefs.append(kw)
-
+    prefs = [kw for kw in _PREF_KEYWORDS if kw in q]
     return Intent(city=city, day_count=day_count, preferences=prefs, raw=q)
 
 
-def _build_prompt(intent: Intent) -> list[dict]:
+def _extract_prefs(text: str) -> list[str]:
+    return [kw for kw in _PREF_KEYWORDS if kw in (text or "")]
+
+
+def build_intent(req) -> Intent:
+    """结构化字段为主，从 free_text 正则补挖偏好关键词。req 为 PlanStreamIn。"""
+    prefs = list(req.preferences or [])
+    for kw in _extract_prefs(req.free_text):
+        if kw not in prefs:
+            prefs.append(kw)
+    return Intent(
+        city=req.destination,
+        day_count=max(1, min(int(req.day_count or 3), 10)),
+        origin=req.origin or "",
+        return_city=req.return_city or req.origin or "",
+        preferences=prefs,
+        raw=req.free_text or "",
+    )
+
+
+# ---- 每日时间轴中间结构 ----
+
+
+@dataclass
+class PlanStop:
+    slot: str  # breakfast|lunch|dinner|attraction|hotel
+    poi: POICreate
+    arrive_time: str | None = None
+    stay_minutes: int | None = None
+
+
+@dataclass
+class DayPlan:
+    day_index: int
+    stops: list[PlanStop] = field(default_factory=list)
+
+
+# ---- 系统提示词（完整 SP）----
+
+_PLAN_SYSTEM_PROMPT = """你是「itravel」的中国境内旅行行程规划专家，为用户编排「每日全景时间轴」。
+
+【你的目标】
+为目的地城市规划一份贴合用户需求、当天顺路、可直接执行的逐日行程。每一天都是一条完整的时间轴：从早餐到晚上入住，告诉用户「几点、在哪、做什么、怎么走、住哪里」。
+
+【每天必须包含（缺一不可）】
+1. 三餐：早餐(breakfast)、午餐(lunch)、晚餐(dinner) 各一个，category 均为 "eat"，应是当地有代表性、口碑好的餐厅或美食地点，且尽量靠近当天游玩区域。
+2. 游玩点：2 到 3 个景点 / 体验地，category 为 "play"，按当天地理位置顺路串联（不要让用户走回头路）。
+3. 住宿：1 个酒店 / 民宿(hotel)，category 为 "stay"，作为当天最后一站，位置应方便次日出行，并兼顾用户预算与偏好。
+
+【字段与格式要求】
+- 只输出一个 JSON 对象，禁止任何解释、前后缀文字或 markdown 代码块（不要 ```）。
+- 顶层格式：{"reply": string, "days": [{"day_index": int, "stops": [stop, ...]}, ...]}。
+- 每个 stop：{"slot": "breakfast|lunch|dinner|attraction|hotel", "category": "eat|play|stay", "name": string, "lng": number, "lat": number, "address": string, "arrive_time": "HH:MM", "stay_minutes": int, "rec_reason": string}。
+- stops 顺序即时间顺序：早餐 → 上午游玩 → 午餐 → 下午游玩 → 晚餐 → 入住，arrive_time 单调递增、贴合常识（早餐约 08:00，午餐约 12:00，晚餐约 18:30，入住约 21:00）。
+- lng/lat 必须是高德地图 GCJ-02 火星坐标系的真实经纬度，精度到小数点后 4 位以上；绝不可编造或留空。坐标必须落在中国境内（经度 73~135.5，纬度 3~53.7）。
+- rec_reason 为推荐理由，必须 ≤50 个字符，具体说明为什么推荐它（如特色菜、看点、适合人群），不要套话。
+- reply 是给用户的一句话中文回复，≤40 个字符、不得换行，概述本次安排的亮点与如何贴合用户需求，例如「按你想轻松逛吃的节奏，安排了宽窄巷子＋本地火锅，晚上住春熙路」。
+
+【顺路与节奏原则】
+- 同一天内地点应集中在相近区域，减少通勤；不要把跨城或相距很远的点塞进同一天。
+- 节奏适中：每天 2~3 个游玩点即可，避免赶场；若用户要求「轻松」，可减到 2 个并拉长停留时间。
+- 多日行程中，按区域/主题合理分配，避免不同天重复同一地点。
+
+【先思考再输出】
+在生成 JSON 前，先在心里完成以下推理（不要输出推理过程）：①确认目的地与天数；②每天选定一个地理片区；③在该片区内选 2~3 个游玩点并排出顺路顺序；④就近为每餐选餐厅；⑤选一个方便的住宿。完成后只输出最终 JSON。
+
+【多轮修改】
+若对话历史中已存在一份行程，且用户提出调整（如「第二天轻松点」「把川菜换成清淡的」「加一天」），你必须在原行程基础上做最小必要改动：只改动用户提到的部分，保留其余天与地点不变，并在 reply 里说明改了什么（如「第二天减到两个景点，午餐换成清淡的」）。除非用户要求，否则不要推翻整份行程重排。
+
+【降级与诚实】
+- 只规划用户指定的目的地城市，不要擅自加别的城市。
+- 如果某个槽位实在没有合适且坐标可靠的地点，宁可少给也不要编造坐标；但三餐与住宿应尽力补齐。"""
+
+
+def _compact_plan(current_plan) -> str:
+    """把当前行程压缩为精简 JSON，供多轮修改注入（控 token）。"""
+    days = []
+    for d in current_plan.days:
+        stops = [
+            {"name": s.poi.name, "category": s.poi.category, "lng": s.poi.lng, "lat": s.poi.lat}
+            for s in d.stops
+        ]
+        days.append({"day_index": d.day_index, "stops": stops})
+    return json.dumps({"days": days}, ensure_ascii=False)
+
+
+def _plan_messages(req, intent: Intent) -> list[dict]:
     pref = "、".join(intent.preferences) if intent.preferences else "无特别偏好"
-    target = max(intent.day_count * 2, 3)
-    sys = (
-        "你是旅游规划助手。只输出 JSON，不要任何解释或 markdown 代码块。"
-        "输出格式：{\"pois\":[{\"name\":str,\"category\":\"eat|stay|play\","
-        "\"lng\":number,\"lat\":number,\"address\":str,\"rec_reason\":str}]}。"
-        "rec_reason 不超过 50 字。lng/lat 用真实经纬度（GCJ-02）。"
-    )
+    messages: list[dict] = [{"role": "system", "content": _PLAN_SYSTEM_PROMPT}]
+    for turn in req.history or []:
+        role = turn.role if turn.role in ("user", "assistant") else "user"
+        messages.append({"role": role, "content": turn.content})
+    if req.current_plan is not None and req.current_plan.days:
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "当前行程如下（请在此基础上按用户要求修改）："
+                + _compact_plan(req.current_plan),
+            }
+        )
     user = (
-        f"为「{intent.city}」规划 {intent.day_count} 天行程，偏好：{pref}。"
-        f"推荐 {target} 个核心 POI（含吃/玩，可含住），按游览价值排序。"
+        f"出发地：{intent.origin or '未指定'}；目的地：{intent.city}；"
+        f"返回地：{intent.return_city or '未指定'}；共 {intent.day_count} 天；"
+        f"偏好：{pref}；用户最新诉求：{req.free_text or '无'}。"
+        f"请为「{intent.city}」规划 {intent.day_count} 天的每日全景时间轴，"
+        f"每天包含三餐+2~3个游玩点+1个住宿，严格按上面的 JSON 契约输出。"
     )
-    return [
-        {"role": "system", "content": sys},
-        {"role": "user", "content": user},
-    ]
+    messages.append({"role": "user", "content": user})
+    return messages
 
 
 def _extract_json(text: str) -> dict:
@@ -86,28 +180,114 @@ def _extract_json(text: str) -> dict:
     return json.loads(t)
 
 
-def recommend_pois(intent: Intent) -> tuple[list[POICreate], bool]:
-    """返回 (pois, degraded)。LLM 失败/校验空 → 用高德桩兜底，degraded=True。"""
-    messages = _build_prompt(intent)
-    for attempt in range(2):  # 原始 + 1 次修复重试
+# ---- 规划（单次 LLM 调用 + 1 次修复重试）----
+
+_DEFAULT_TIMES = {
+    "breakfast": "08:00",
+    "attraction": "10:00",
+    "lunch": "12:00",
+    "dinner": "18:30",
+    "hotel": "21:00",
+}
+_DEFAULT_STAY = {
+    "breakfast": 45,
+    "lunch": 60,
+    "dinner": 75,
+    "attraction": 120,
+    "hotel": 600,
+}
+
+
+def _parse_days(raw_days: list) -> list[DayPlan]:
+    days: list[DayPlan] = []
+    for raw in raw_days:
+        if not isinstance(raw, dict):
+            continue
+        index = int(raw.get("day_index") or len(days) + 1)
+        stops = [
+            PlanStop(slot=slot, poi=poi, arrive_time=at, stay_minutes=sm)
+            for slot, poi, at, sm in validators.validate_llm_day_stops(
+                raw.get("stops", []) or []
+            )
+        ]
+        if stops:
+            days.append(DayPlan(day_index=index, stops=stops))
+    return days
+
+
+def _has_slot(day: DayPlan, category: str) -> bool:
+    return any(s.poi.category == category for s in day.stops)
+
+
+def _backfill_day(day: DayPlan, city: str) -> None:
+    """某天缺三餐/住宿时，从高德桩就近回补，保证时间轴完整（非整体降级）。"""
+    used = {s.poi.name for s in day.stops}
+    eat_count = sum(1 for s in day.stops if s.poi.category == "eat")
+    for _ in range(max(0, 3 - eat_count)):
+        for poi in amap_stub.candidates(city, "eat", exclude=used):
+            day.stops.append(PlanStop(slot="lunch", poi=poi))
+            used.add(poi.name)
+            break
+    if not _has_slot(day, "stay"):
+        for poi in amap_stub.candidates(city, "stay", exclude=used):
+            day.stops.append(PlanStop(slot="hotel", poi=poi))
+            used.add(poi.name)
+            break
+
+
+def recommend_plan(req) -> tuple[list[DayPlan], bool]:
+    """返回 (per-day 时间轴, degraded)。LLM 失败/校验空 → 高德桩兜底。req 为 PlanStreamIn。"""
+    intent = build_intent(req)
+    messages = _plan_messages(req, intent)
+    for attempt in range(2):
         try:
             buf = "".join(llm.stream_chat(messages))
             data = _extract_json(buf)
-            raw_pois = data.get("pois", []) if isinstance(data, dict) else []
-            pois = validators.validate_llm_pois(raw_pois)
-            if len(pois) >= 3:
-                return pois, False
+            raw_days = data.get("days", []) if isinstance(data, dict) else []
+            reply = data.get("reply") if isinstance(data, dict) else None
+            days = _parse_days(raw_days)
+            if days:
+                for day in days:
+                    _backfill_day(day, intent.city)
+                _attach_reply(days, reply)
+                return days, False
             if attempt == 0:
                 messages = messages + [
-                    {"role": "user", "content": "POI 不足或格式不符，请重新只输出合规 JSON。"}
+                    {"role": "user", "content": "格式不符或为空，请重新只输出合规 JSON。"}
                 ]
                 continue
         except Exception:
             if attempt == 0:
                 continue
             break
-    # 兜底：高德桩热门排序（PRD §8.3）
-    return amap_stub.hot_pois(intent.city, limit=max(intent.day_count * 2, 3)), True
+    return _fallback_plan(intent), True
+
+
+# reply 通过附在首日的属性传出（避免改 dataclass 签名影响测试）。
+def _attach_reply(days: list[DayPlan], reply) -> None:
+    text = reply.strip().replace("\n", " ") if isinstance(reply, str) else ""
+    if days:
+        setattr(days[0], "_reply", text)
+
+
+def _fallback_plan(intent: Intent) -> list[DayPlan]:
+    """LLM 不可用时用高德桩拼出每日时间轴，保证离线可演示。"""
+    days: list[DayPlan] = []
+    for di in range(1, intent.day_count + 1):
+        used: set[str] = set()
+        stops: list[PlanStop] = []
+        for slot in ("breakfast", "attraction", "lunch", "attraction", "dinner", "hotel"):
+            category = validators.SLOT_TO_CATEGORY[slot]
+            picked = amap_stub.candidates(intent.city, category, exclude=used)
+            if picked:
+                poi = picked[0]
+                used.add(poi.name)
+                stops.append(PlanStop(slot=slot, poi=poi))
+        days.append(DayPlan(day_index=di, stops=stops))
+    return days
+
+
+# ---- 顺路排序（餐/酒店钉死骨架，景点最近邻）----
 
 
 def _haversine_m(a: POICreate, b: POICreate) -> int | None:
@@ -137,43 +317,130 @@ def _nearest_neighbor_order(pois: list[POICreate]) -> list[POICreate]:
     return ordered + without
 
 
-def route_and_split(pois: list[POICreate], intent: Intent) -> list[list[POICreate]]:
-    """顺路排序 + 按天均分（PRD §5.1.2）。返回每天的 POI 列表。"""
-    ordered = _nearest_neighbor_order(pois)
-    days = max(1, intent.day_count)
-    per = math.ceil(len(ordered) / days) if ordered else 0
-    buckets: list[list[POICreate]] = []
-    for i in range(days):
-        chunk = ordered[i * per : (i + 1) * per] if per else []
-        buckets.append(chunk)
-    # 把空天的占位补齐（保证 day_count 一致）；多余 POI 已在最后一桶
-    return buckets
+_SLOT_RANK = {"breakfast": 0, "lunch": 2, "dinner": 4, "hotel": 5}
 
 
-def assemble_draft(
-    intent: Intent, buckets: list[list[POICreate]]
-) -> ItineraryCreate:
-    """组装为 M1 的 ItineraryCreate，含 Stop 排序与相邻 Transit（步行估算）。"""
-    days: list[DayCreate] = []
-    for di, chunk in enumerate(buckets, start=1):
+def order_day_stops(day: DayPlan) -> DayPlan:
+    """按时间轴骨架重排：早餐→上午景点→午餐→下午景点→晚餐→酒店。
+
+    餐与酒店按 slot 钉死，景点用最近邻顺路排序后均分到上午/下午两段。
+    """
+    meals = {s.slot: s for s in day.stops if s.slot in ("breakfast", "lunch", "dinner")}
+    hotel = next((s for s in day.stops if s.slot == "hotel"), None)
+    attractions = [s for s in day.stops if s.slot == "attraction"]
+
+    if attractions:
+        ordered_pois = _nearest_neighbor_order([s.poi for s in attractions])
+        by_poi = {id(s.poi): s for s in attractions}
+        attractions = [by_poi[id(p)] for p in ordered_pois]
+    half = math.ceil(len(attractions) / 2) if attractions else 0
+    morning, afternoon = attractions[:half], attractions[half:]
+
+    sequence: list[PlanStop] = []
+    if "breakfast" in meals:
+        sequence.append(meals["breakfast"])
+    sequence.extend(morning)
+    if "lunch" in meals:
+        sequence.append(meals["lunch"])
+    sequence.extend(afternoon)
+    if "dinner" in meals:
+        sequence.append(meals["dinner"])
+    if hotel is not None:
+        sequence.append(hotel)
+    # 兜底：把未归类的 stop（理论上没有）追加在尾部
+    classified = set(id(s) for s in sequence)
+    sequence.extend(s for s in day.stops if id(s) not in classified)
+
+    return DayPlan(day_index=day.day_index, stops=sequence)
+
+
+# ---- 组装为 ItineraryCreate（含交通段）----
+
+_WALK_SPEED = 1.3  # m/s
+_DRIVE_SPEED = 8.3  # m/s ≈ 30 km/h 市区
+_WALK_MAX_M = 2000  # ≤2km 视为步行
+
+
+def _transit_for(prev: POICreate, cur: POICreate, from_i: int, to_i: int) -> TransitCreate:
+    dist = _haversine_m(prev, cur)
+    if dist is None:
+        return TransitCreate(
+            from_order_index=from_i, to_order_index=to_i, mode="walking"
+        )
+    if dist <= _WALK_MAX_M:
+        return TransitCreate(
+            from_order_index=from_i,
+            to_order_index=to_i,
+            mode="walking",
+            distance_meters=dist,
+            duration_seconds=int(dist / _WALK_SPEED),
+        )
+    return TransitCreate(
+        from_order_index=from_i,
+        to_order_index=to_i,
+        mode="driving",
+        distance_meters=dist,
+        duration_seconds=int(dist / _DRIVE_SPEED),
+    )
+
+
+def _hhmm_to_min(t: str | None) -> int | None:
+    if not t or ":" not in t:
+        return None
+    try:
+        h, m = t.split(":")
+        return int(h) * 60 + int(m)
+    except ValueError:
+        return None
+
+
+def _min_to_hhmm(total: int) -> str:
+    total = max(0, min(total, 23 * 60 + 59))
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def _sequential_times(day: DayPlan) -> list[str]:
+    """按最终顺序分配单调递增的到达时间：餐用 slot 锚点，其余顺延 + 30 分钟通勤。
+
+    避免 LLM 原始 arrive_time 在重排后出现「下午景点显示在上午」的非单调问题。
+    """
+    times: list[str] = []
+    cur = _hhmm_to_min(_DEFAULT_TIMES["breakfast"]) or 8 * 60
+    for i, ps in enumerate(day.stops):
+        anchor = _hhmm_to_min(_DEFAULT_TIMES.get(ps.slot))
+        # 餐/酒店有合理锚点且不早于当前，则吸附到锚点
+        if anchor is not None and ps.slot in ("breakfast", "lunch", "dinner", "hotel"):
+            cur = max(cur, anchor)
+        times.append(_min_to_hhmm(cur))
+        stay = ps.stay_minutes or _DEFAULT_STAY.get(ps.slot, 90)
+        cur += stay + (30 if i < len(day.stops) - 1 else 0)  # +通勤缓冲
+    return times
+
+
+def assemble_draft(req, days: list[DayPlan]) -> ItineraryCreate:
+    """组装为 ItineraryCreate，含 Stop 排序、arrive_time/stay_minutes 与相邻 Transit。"""
+    intent = build_intent(req)
+    day_creates: list[DayCreate] = []
+    for day in days:
+        seq_times = _sequential_times(day)
         stops: list[StopCreate] = []
         transits: list[TransitCreate] = []
-        for oi, poi in enumerate(chunk, start=1):
-            stops.append(StopCreate(order_index=oi, poi=poi))
-            if oi > 1:
-                prev = chunk[oi - 2]
-                dist = _haversine_m(prev, poi)
-                dur = int(dist / 1.3) if dist is not None else None  # ~步行 1.3m/s
-                transits.append(
-                    TransitCreate(
-                        from_order_index=oi - 1,
-                        to_order_index=oi,
-                        mode="walking",
-                        distance_meters=dist,
-                        duration_seconds=dur,
-                    )
+        for oi, ps in enumerate(day.stops, start=1):
+            stops.append(
+                StopCreate(
+                    order_index=oi,
+                    poi=ps.poi,
+                    arrive_time=seq_times[oi - 1],
+                    stay_minutes=ps.stay_minutes or _DEFAULT_STAY.get(ps.slot),
                 )
-        days.append(DayCreate(day_index=di, stops=stops, transits=transits))
+            )
+            if oi > 1:
+                transits.append(
+                    _transit_for(day.stops[oi - 2].poi, ps.poi, oi - 1, oi)
+                )
+        day_creates.append(
+            DayCreate(day_index=day.day_index, stops=stops, transits=transits)
+        )
 
     title = f"{intent.city}{intent.day_count}日游"
-    return ItineraryCreate(title=title, city=intent.city, status="draft", days=days)
+    return ItineraryCreate(title=title, city=intent.city, status="draft", days=day_creates)

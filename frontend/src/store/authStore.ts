@@ -8,15 +8,12 @@ import {
 } from "../api/client";
 
 // 鉴权状态（PRD §5.4）：token 持久化于 localStorage，user 内存态。
+// 访客可完整规划；登录仅在用户主动点击或保存计划时触发（无静默登录）。
 
 interface AuthUser {
   id: number;
   email: string;
 }
-
-// 默认管理员（无登录页方案）：与后端 auth.ensure_default_admin 一致。
-const DEFAULT_ADMIN_EMAIL = "admin@123.com";
-const DEFAULT_ADMIN_PASSWORD = "12345678";
 
 interface AuthState {
   user: AuthUser | null;
@@ -24,11 +21,10 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
   logout: () => void;
-  loadMe: () => Promise<void>;
   bootstrap: () => Promise<void>;
 }
 
-export const useAuthStore = create<AuthState>((set, get) => ({
+export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   loading: true,
   login: async (email, password) => {
@@ -45,23 +41,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     clearToken();
     set({ user: null });
   },
-  loadMe: async () => {
-    const me = await getMe();
-    set({ user: me, loading: false });
-  },
-  // 无登录页：先尝试恢复会话，失败则用默认管理员静默登录。
+  // 仅尝试用已存 token 恢复会话；无 token / 失效则保持访客态。
   bootstrap: async () => {
     set({ loading: true });
     try {
       const me = await getMe();
-      if (me) {
-        set({ user: me, loading: false });
-        return;
-      }
-      await get().login(DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD);
+      set({ user: me, loading: false });
     } catch {
-      // 后端不可用时也不阻塞页面，仅保持未登录态。
-    } finally {
       set({ loading: false });
     }
   },

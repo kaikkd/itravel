@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Plus, Sparkles } from "lucide-react";
-import { suggestItinerary } from "../../api/client";
 import { usePlanFlowStore } from "../../store/planFlowStore";
-import { useTripStore } from "../../store/tripStore";
+import { useItineraryStore } from "../../store/itineraryStore";
+import { useChatStore } from "../../store/chatStore";
 import { useUiStore } from "../../store/uiStore";
+import { runPlan } from "../../lib/planController";
+import MessageList from "./MessageList";
 
 function pickGreeting(dest: string): string {
   const h = new Date().getHours();
@@ -24,18 +26,19 @@ export default function ChatDock() {
   const returnCity = usePlanFlowStore((s) => s.returnCity);
   const dayCount = usePlanFlowStore((s) => s.dayCount);
   const primaryDestination = usePlanFlowStore((s) => s.primaryDestination)();
-  const hasSuggestions = useTripStore((s) => s.hasSuggestions);
-  const loading = useTripStore((s) => s.loadingSuggestions);
-  const setLoading = useTripStore((s) => s.setLoadingSuggestions);
-  const setSuggestions = useTripStore((s) => s.setSuggestions);
+  const phase = useItineraryStore((s) => s.phase);
+  const statusText = useItineraryStore((s) => s.statusText);
+  const messages = useChatStore((s) => s.messages);
   const flashTick = useUiStore((s) => s.flashTick);
 
+  const loading = phase === "streaming";
+  const hasMessages = messages.length > 0;
+
   const [text, setText] = useState("");
-  const [reply, setReply] = useState("");
-  const [errorMsg, setErrorMsg] = useState("");
   const [greeting] = useState(() => pickGreeting(primaryDestination));
   const [flashing, setFlashing] = useState(false);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelRef = useRef<(() => void) | null>(null);
 
   // 外部信号（如中心提示结束）→ 边缘闪烁一次。
   useEffect(() => {
@@ -48,62 +51,45 @@ export default function ChatDock() {
     };
   }, [flashTick]);
 
-  const inputStateClass = loading
-    ? "input-pulse"
-    : flashing
-      ? "input-flash"
-      : "";
+  useEffect(() => () => cancelRef.current?.(), []);
 
-  async function send() {
+  const inputStateClass = loading ? "input-pulse" : flashing ? "input-flash" : "";
+
+  function send() {
     const message = text.trim();
     if (!message || loading) return;
     setText("");
-    setErrorMsg("");
-    setReply("");
-    setLoading(true);
-    try {
-      const resp = await suggestItinerary({
-        destination: primaryDestination,
-        origin,
-        return_city: returnCity,
-        day_count: dayCount,
-        free_text: message,
-      });
-      setSuggestions(resp);
-      setReply(
-        resp.reply ||
-          (resp.degraded
-            ? "AI 暂不可用，已用热门候选兜底，去左侧空位挑选吧。"
-            : "已整理好候选，点左侧闪烁的空位逐个添加。"),
-      );
-    } catch {
-      setLoading(false);
-      setErrorMsg("生成候选失败，请确认后端在运行后重试。");
-    }
+    cancelRef.current = runPlan({
+      destination: primaryDestination,
+      origin,
+      returnCity,
+      dayCount,
+      freeText: message,
+    });
   }
 
-  // 等待 LLM 时先显示推荐中；否则错误 > 回复 > 首条问候。
-  const aiMessage = loading
-    ? "itravel 正在为你推荐景点…"
-    : errorMsg || reply || greeting;
-
   return (
-    <div className="border-t border-line bg-surface px-4 py-3">
-      <div className="w-full">
-        {aiMessage && (
-          <div className="mb-3 flex items-start gap-2">
+    <div className="flex max-h-[58%] flex-col border-t border-line bg-surface">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        {hasMessages ? (
+          <MessageList
+            messages={messages}
+            loading={loading}
+            statusText={statusText}
+          />
+        ) : (
+          <div className="flex items-start gap-2 chat-enter">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-clay text-white shadow-soft">
               <Sparkles className="h-4 w-4" />
             </div>
-            <div
-              className={`max-w-[88%] rounded-2xl rounded-tl-sm border border-line bg-ivory px-3.5 py-2 text-sm shadow-soft ${
-                errorMsg ? "text-rose-500" : "text-ink"
-              }`}
-            >
-              {aiMessage}
+            <div className="max-w-[88%] rounded-2xl rounded-tl-sm border border-line bg-ivory px-3.5 py-2 text-sm text-ink shadow-soft">
+              {greeting}
             </div>
           </div>
         )}
+      </div>
+
+      <div className="px-4 pb-3">
         <div
           className={`flex items-center gap-2 rounded-full border border-line bg-surface px-2 py-2 shadow-soft ${inputStateClass}`}
         >
@@ -120,7 +106,7 @@ export default function ChatDock() {
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && send()}
             placeholder={
-              hasSuggestions
+              hasMessages
                 ? "继续补充偏好，例如：第二天想轻松一点、爱吃辣…"
                 : "和 itravel 聊聊：你想怎么玩？喜欢什么类型？"
             }

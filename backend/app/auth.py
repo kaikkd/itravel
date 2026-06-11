@@ -106,20 +106,3 @@ def get_current_user(
 
 def get_user_by_email(session: Session, email: str) -> User | None:
     return session.exec(select(User).where(User.email == email)).first()
-
-
-# 默认管理员（无登录页方案）：启动时自动创建，前端静默登录。
-DEFAULT_ADMIN_EMAIL = "admin@123.com"
-DEFAULT_ADMIN_PASSWORD = "12345678"
-
-
-def ensure_default_admin(session: Session) -> None:
-    """启动钩子调用：若默认管理员不存在则创建。"""
-    if get_user_by_email(session, DEFAULT_ADMIN_EMAIL) is not None:
-        return
-    user = User(
-        email=DEFAULT_ADMIN_EMAIL,
-        password_hash=hash_password(DEFAULT_ADMIN_PASSWORD),
-    )
-    session.add(user)
-    session.commit()

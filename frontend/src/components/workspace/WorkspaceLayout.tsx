@@ -6,14 +6,14 @@ import ScheduleColumn from "./ScheduleColumn";
 import FlightBoard from "./FlightBoard";
 import TripMap from "./TripMap";
 import { usePlanFlowStore } from "../../store/planFlowStore";
-import { useTripStore } from "../../store/tripStore";
+import { useFlightStore } from "../../store/flightStore";
 import { useUiStore } from "../../store/uiStore";
 
 const INTRO_TEXT = "和 itravel 聊聊你的旅行吧～";
 
 export default function WorkspaceLayout() {
   const mode = usePlanFlowStore((s) => s.mode);
-  const flightsConfirmed = useTripStore((s) => s.flightsConfirmed);
+  const flightsConfirmed = useFlightStore((s) => s.flightsConfirmed);
   const bumpFlash = useUiStore((s) => s.bumpFlash);
 
   const showFlights = mode === "traffic_first" && !flightsConfirmed;

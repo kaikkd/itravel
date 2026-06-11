@@ -69,7 +69,46 @@ def test_parse_intent():
     assert i2.day_count == 5
 
 
-# ---- recommend_pois (mock llm) ----
+# ---- slot 校验 ----
+
+
+def test_normalize_slot():
+    assert validators.normalize_slot("breakfast", None) == ("breakfast", "eat")
+    assert validators.normalize_slot("hotel", "stay") == ("hotel", "stay")
+    # slot 缺失从 category 推导
+    assert validators.normalize_slot(None, "play") == ("attraction", "play")
+    # 都非法
+    assert validators.normalize_slot("xx", "drink") == (None, None)
+
+
+def test_validate_arrive_time_and_stay():
+    assert validators.validate_arrive_time("08:00") == "08:00"
+    assert validators.validate_arrive_time("23:59") == "23:59"
+    assert validators.validate_arrive_time("24:00") is None
+    assert validators.validate_arrive_time("8點") is None
+    assert validators.validate_stay_minutes(60) == 60
+    assert validators.validate_stay_minutes(0) is None
+    assert validators.validate_stay_minutes(9999) is None
+    assert validators.validate_stay_minutes("60") is None
+
+
+def test_validate_llm_day_stops_filters_dirty():
+    raw = [
+        {"slot": "breakfast", "name": "甜水面", "lng": 104.05, "lat": 30.65,
+         "arrive_time": "08:00", "stay_minutes": 45, "rec_reason": "本地早餐"},
+        {"slot": "attraction", "name": "坏坐标", "lng": 999, "lat": 999},  # 越界丢弃
+        {"slot": "hotel", "name": "缺坐标酒店"},  # 时间轴场景缺坐标丢弃
+        {"slot": "xx", "name": "非法槽位", "lng": 104, "lat": 30},  # slot 非法丢弃
+    ]
+    stops = validators.validate_llm_day_stops(raw)
+    names = [poi.name for _, poi, _, _ in stops]
+    assert names == ["甜水面"]
+    slot, poi, at, sm = stops[0]
+    assert slot == "breakfast" and poi.category == "eat"
+    assert at == "08:00" and sm == 45
+
+
+# ---- recommend_plan (mock llm) ----
 
 
 def _mock_stream(content: str):
@@ -78,62 +117,137 @@ def _mock_stream(content: str):
     return _gen
 
 
-def test_recommend_pois_valid(monkeypatch):
-    payload = {"pois": [
-        {"name": "武侯祠", "category": "play", "lng": 104.04, "lat": 30.64,
-         "rec_reason": "三国地标"},
-        {"name": "锦里", "category": "eat", "lng": 104.05, "lat": 30.64},
-        {"name": "宽窄巷子", "category": "play", "lng": 104.06, "lat": 30.66},
-    ]}
-    monkeypatch.setattr(
-        workflow.llm, "stream_chat", _mock_stream(json.dumps(payload))
-    )
-    i = workflow.parse_intent("成都三天")
-    pois, degraded = workflow.recommend_pois(i)
+class _Req:
+    """轻量 PlanStreamIn 替身（recommend_plan 只读这些属性）。"""
+
+    def __init__(self, destination="成都", day_count=3, free_text=""):
+        self.destination = destination
+        self.origin = ""
+        self.return_city = ""
+        self.day_count = day_count
+        self.preferences = []
+        self.free_text = free_text
+        self.history = []
+        self.current_plan = None
+
+
+def _full_day(day_index: int) -> dict:
+    return {
+        "day_index": day_index,
+        "stops": [
+            {"slot": "breakfast", "category": "eat", "name": f"早餐{day_index}",
+             "lng": 104.05, "lat": 30.65, "arrive_time": "08:00", "stay_minutes": 45,
+             "rec_reason": "本地味道"},
+            {"slot": "attraction", "category": "play", "name": f"景点A{day_index}",
+             "lng": 104.06, "lat": 30.66, "arrive_time": "10:00", "stay_minutes": 120},
+            {"slot": "attraction", "category": "play", "name": f"景点B{day_index}",
+             "lng": 104.08, "lat": 30.67, "arrive_time": "14:00", "stay_minutes": 120},
+            {"slot": "lunch", "category": "eat", "name": f"午餐{day_index}",
+             "lng": 104.07, "lat": 30.66, "arrive_time": "12:00", "stay_minutes": 60},
+            {"slot": "dinner", "category": "eat", "name": f"晚餐{day_index}",
+             "lng": 104.08, "lat": 30.66, "arrive_time": "18:30", "stay_minutes": 75},
+            {"slot": "hotel", "category": "stay", "name": f"酒店{day_index}",
+             "lng": 104.08, "lat": 30.65, "arrive_time": "21:00", "stay_minutes": 600},
+        ],
+    }
+
+
+def test_recommend_plan_valid(monkeypatch):
+    payload = {"reply": "已安排好成都三天行程", "days": [_full_day(d) for d in (1, 2, 3)]}
+    monkeypatch.setattr(workflow.llm, "stream_chat", _mock_stream(json.dumps(payload)))
+    days, degraded = workflow.recommend_plan(_Req())
     assert degraded is False
-    assert len(pois) == 3
+    assert len(days) == 3
+    # 每天都含吃/玩/住
+    cats = {s.poi.category for s in days[0].stops}
+    assert {"eat", "play", "stay"} <= cats
+    assert getattr(days[0], "_reply", "") == "已安排好成都三天行程"
 
 
-def test_recommend_pois_json_in_fence(monkeypatch):
-    payload = {"pois": [
-        {"name": "A", "category": "play", "lng": 104.0, "lat": 30.6},
-        {"name": "B", "category": "eat", "lng": 104.1, "lat": 30.6},
-        {"name": "C", "category": "play", "lng": 104.2, "lat": 30.6},
-    ]}
+def test_recommend_plan_json_in_fence(monkeypatch):
+    payload = {"reply": "ok", "days": [_full_day(1)]}
     fenced = "```json\n" + json.dumps(payload) + "\n```"
     monkeypatch.setattr(workflow.llm, "stream_chat", _mock_stream(fenced))
-    pois, degraded = workflow.recommend_pois(workflow.parse_intent("成都三天"))
+    days, degraded = workflow.recommend_plan(_Req(day_count=1))
     assert degraded is False
-    assert len(pois) == 3
+    assert len(days) == 1
 
 
-def test_recommend_pois_non_json_degrades(monkeypatch):
-    monkeypatch.setattr(
-        workflow.llm, "stream_chat", _mock_stream("抱歉我无法帮你规划")
-    )
-    pois, degraded = workflow.recommend_pois(workflow.parse_intent("成都三天"))
+def test_recommend_plan_non_json_degrades(monkeypatch):
+    monkeypatch.setattr(workflow.llm, "stream_chat", _mock_stream("抱歉我无法帮你规划"))
+    days, degraded = workflow.recommend_plan(_Req())
     assert degraded is True  # 走高德桩兜底
-    assert len(pois) >= 3
+    assert len(days) == 3
 
 
-# ---- route + assemble ----
+def test_recommend_plan_backfills_missing_meals(monkeypatch):
+    # 只给一个景点，三餐/住宿缺失 → 应回补（仍非 degraded）
+    payload = {"days": [{"day_index": 1, "stops": [
+        {"slot": "attraction", "category": "play", "name": "武侯祠",
+         "lng": 104.04, "lat": 30.64},
+    ]}]}
+    monkeypatch.setattr(workflow.llm, "stream_chat", _mock_stream(json.dumps(payload)))
+    days, degraded = workflow.recommend_plan(_Req(day_count=1))
+    assert degraded is False
+    cats = [s.poi.category for s in days[0].stops]
+    assert cats.count("eat") >= 1
+    assert "stay" in cats
 
 
-def test_route_split_and_assemble(monkeypatch):
-    payload = {"pois": [
-        {"name": f"P{n}", "category": "play", "lng": 104.0 + n / 100, "lat": 30.6}
-        for n in range(6)
-    ]}
-    monkeypatch.setattr(
-        workflow.llm, "stream_chat", _mock_stream(json.dumps(payload))
-    )
-    i = workflow.parse_intent("成都三天")
-    pois, _ = workflow.recommend_pois(i)
-    buckets = workflow.route_and_split(pois, i)
-    draft = workflow.assemble_draft(i, buckets)
-    assert len(draft.days) == 3
-    total_stops = sum(len(d.stops) for d in draft.days)
-    assert total_stops == 6  # 全部 POI 分到天里
+# ---- order + assemble ----
+
+
+def test_order_day_stops_timeline_backbone(monkeypatch):
+    payload = {"days": [_full_day(1)]}
+    monkeypatch.setattr(workflow.llm, "stream_chat", _mock_stream(json.dumps(payload)))
+    days, _ = workflow.recommend_plan(_Req(day_count=1))
+    ordered = workflow.order_day_stops(days[0])
+    slots = [s.slot for s in ordered.stops]
+    # 骨架：早餐在最前，酒店在最后，午餐在景点之间
+    assert slots[0] == "breakfast"
+    assert slots[-1] == "hotel"
+    assert "lunch" in slots and "dinner" in slots
+
+
+def test_assemble_draft_carries_time_and_transit(monkeypatch):
+    payload = {"days": [_full_day(d) for d in (1, 2)]}
+    monkeypatch.setattr(workflow.llm, "stream_chat", _mock_stream(json.dumps(payload)))
+    req = _Req(day_count=2)
+    days, _ = workflow.recommend_plan(req)
+    ordered = [workflow.order_day_stops(d) for d in days]
+    draft = workflow.assemble_draft(req, ordered)
+    assert len(draft.days) == 2
     for day in draft.days:
         orders = [s.order_index for s in day.stops]
-        assert orders == sorted(orders)  # order 连续递增
+        assert orders == list(range(1, len(day.stops) + 1))  # 连续递增
+        assert all(s.arrive_time for s in day.stops)  # 时间携带
+        # 相邻段都有交通
+        assert len(day.transits) == len(day.stops) - 1
+
+
+# ---- POST /plan/stream 端点（SSE 事件序列）----
+
+
+def test_plan_stream_endpoint_event_sequence(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    payload = {"reply": "已排好成都1天行程", "days": [_full_day(1)]}
+    monkeypatch.setattr(workflow.llm, "stream_chat", _mock_stream(json.dumps(payload)))
+
+    client = TestClient(app)
+    resp = client.post(
+        "/plan/stream",
+        json={"destination": "成都", "day_count": 1, "free_text": "轻松逛吃"},
+    )
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.headers["content-type"]
+    events = [
+        line.split("event: ", 1)[1]
+        for line in resp.text.splitlines()
+        if line.startswith("event: ")
+    ]
+    assert events == [
+        "status", "intent", "skeleton", "status", "reply", "day", "itinerary", "done"
+    ]

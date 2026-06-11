@@ -1,9 +1,7 @@
 import type {
-  Category,
   Itinerary,
   ItinerarySummary,
-  POI,
-  SuggestionResponse,
+  PlanSkeleton,
 } from "../types";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
@@ -25,70 +23,7 @@ function authHeaders(extra: Record<string, string> = {}): Record<string, string>
   return t ? { ...extra, Authorization: `Bearer ${t}` } : extra;
 }
 
-export interface CandidatesResult {
-  pois: POI[];
-  degraded: boolean;
-}
-
-// 卡片流候选 POI。regenerate=false 即时走桩（初始填充）；true 调 LLM 重生成该类目。
-async function fetchCandidates(
-  city: string,
-  category: Category,
-  exclude: string[],
-  regenerate: boolean,
-): Promise<CandidatesResult> {
-  const params = new URLSearchParams({
-    city,
-    category,
-    exclude: exclude.join(","),
-    regenerate: String(regenerate),
-  });
-  const res = await fetch(`${API_BASE}/poi/candidates?${params.toString()}`);
-  if (!res.ok) {
-    throw new Error(`/poi/candidates 返回 ${res.status}`);
-  }
-  const body = (await res.json()) as {
-    pois: Partial<POI>[];
-    degraded: boolean;
-  };
-  // 后端候选只回 name/category/lng/lat/address/rec_reason，补齐为完整 POI 形状。
-  const pois: POI[] = body.pois.map((p) => ({
-    id: 0,
-    amap_id: null,
-    name: p.name ?? "",
-    category: (p.category ?? "play") as Category,
-    lng: p.lng ?? null,
-    lat: p.lat ?? null,
-    address: p.address ?? null,
-    rec_reason: p.rec_reason ?? null,
-    sources: [],
-  }));
-  return { pois, degraded: body.degraded };
-}
-
-export function getCandidates(
-  city: string,
-  category: Category,
-  exclude: string[] = [],
-): Promise<CandidatesResult> {
-  return fetchCandidates(city, category, exclude, false);
-}
-
-export function regenerateCandidates(
-  city: string,
-  category: Category,
-  exclude: string[] = [],
-): Promise<CandidatesResult> {
-  return fetchCandidates(city, category, exclude, true);
-}
-
-export async function getHealth(): Promise<{ status: string }> {
-  const res = await fetch(`${API_BASE}/health`);
-  if (!res.ok) {
-    throw new Error(`/health 返回 ${res.status}`);
-  }
-  return res.json();
-}
+// ---- 已保存行程（M5） ----
 
 export async function listItineraries(): Promise<ItinerarySummary[]> {
   const res = await fetch(`${API_BASE}/itineraries`, { headers: authHeaders() });
@@ -112,7 +47,7 @@ export async function getItinerary(id: number): Promise<Itinerary> {
   return res.json();
 }
 
-// 保存当前行程（草案树）到后端，绑定当前登录用户（M5）。返回落库后的完整树。
+// 保存当前行程（草案树）到后端，绑定当前登录用户。返回落库后的完整树。
 export async function saveItinerary(itinerary: Itinerary): Promise<Itinerary> {
   const payload = {
     title: itinerary.title,
@@ -147,7 +82,8 @@ export async function saveItinerary(itinerary: Itinerary): Promise<Itinerary> {
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    throw new Error(`保存失败：${res.status}`);
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail ?? `保存失败：${res.status}`);
   }
   return res.json();
 }
@@ -159,7 +95,7 @@ function buildTransitCreate(d: Itinerary["days"][number]) {
     .map((t) => ({
       from_order_index: idToOrder.get(t.from_stop_id),
       to_order_index: idToOrder.get(t.to_stop_id),
-      mode: t.mode,
+      mode: t.mode === "transit" ? "driving" : t.mode, // 后端仅 walking/driving
       duration_seconds: t.duration_seconds,
       distance_meters: t.distance_meters,
       polyline: t.polyline,
@@ -248,71 +184,121 @@ export async function recomputeTransits(
   return body.results;
 }
 
-// ---- 结构化候选（结合出发/目的/返回 + 偏好 + 自由文本） ----
+// ---- 流式规划（POST /plan/stream，fetch + ReadableStream SSE） ----
 
-export interface SuggestRequest {
+export interface ChatTurnPayload {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface PlanStreamRequest {
   destination: string;
   origin?: string;
   return_city?: string;
   day_count?: number;
   preferences?: string[];
   free_text?: string;
-}
-
-export async function suggestItinerary(
-  req: SuggestRequest,
-): Promise<SuggestionResponse> {
-  const res = await fetch(`${API_BASE}/plan/suggestions`, {
-    method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify(req),
-  });
-  if (!res.ok) {
-    throw new Error(`/plan/suggestions 返回 ${res.status}`);
-  }
-  return res.json();
+  history?: ChatTurnPayload[];
+  // 当前行程（无 id 的 Create 形态），用于多轮最小改动
+  current_plan?: unknown;
 }
 
 export interface PlanHandlers {
   onStatus?: (text: string) => void;
-  onIntent?: (data: { city: string; day_count: number }) => void;
-  onSkeleton?: (pois: POI[]) => void;
+  onIntent?: (data: { city: string; day_count: number; preferences: string[] }) => void;
+  onSkeleton?: (skeleton: PlanSkeleton) => void;
+  onReply?: (text: string) => void;
+  onDay?: (day: Itinerary["days"][number]) => void;
   onItinerary?: (itinerary: Itinerary) => void;
   onDegraded?: (reason: string) => void;
-  onDone?: (itineraryId: number) => void;
+  onDone?: () => void;
   onError?: (err: Error) => void;
 }
 
-// SSE 流式规划。done/error 时关闭连接，禁用 EventSource 自动重连。
-export function streamPlan(q: string, handlers: PlanHandlers): () => void {
-  const url = `${API_BASE}/plan/stream?q=${encodeURIComponent(q)}`;
-  const es = new EventSource(url);
+// EventSource 不能带 body/Authorization，改用 fetch POST + ReadableStream 解析 SSE。
+// 返回取消函数。
+export function streamPlan(
+  req: PlanStreamRequest,
+  handlers: PlanHandlers,
+): () => void {
+  const controller = new AbortController();
 
-  es.addEventListener("status", (e) =>
-    handlers.onStatus?.(JSON.parse((e as MessageEvent).data).text),
-  );
-  es.addEventListener("intent", (e) =>
-    handlers.onIntent?.(JSON.parse((e as MessageEvent).data)),
-  );
-  es.addEventListener("skeleton", (e) =>
-    handlers.onSkeleton?.(JSON.parse((e as MessageEvent).data).pois),
-  );
-  es.addEventListener("itinerary", (e) =>
-    handlers.onItinerary?.(JSON.parse((e as MessageEvent).data)),
-  );
-  es.addEventListener("degraded", (e) =>
-    handlers.onDegraded?.(JSON.parse((e as MessageEvent).data).reason),
-  );
-  es.addEventListener("done", (e) => {
-    handlers.onDone?.(JSON.parse((e as MessageEvent).data).itinerary_id);
-    es.close();
-  });
-  es.onerror = () => {
-    // 流正常结束（done 后服务端关闭）也会触发 onerror；用 readyState 区分
-    if (es.readyState === EventSource.CLOSED) return;
-    handlers.onError?.(new Error("规划流连接中断"));
-    es.close();
+  const dispatch = (event: string, data: string) => {
+    let parsed: unknown = {};
+    try {
+      parsed = data ? JSON.parse(data) : {};
+    } catch {
+      parsed = {};
+    }
+    const p = parsed as Record<string, unknown>;
+    switch (event) {
+      case "status":
+        handlers.onStatus?.(String(p.text ?? ""));
+        break;
+      case "intent":
+        handlers.onIntent?.(parsed as { city: string; day_count: number; preferences: string[] });
+        break;
+      case "skeleton":
+        handlers.onSkeleton?.(parsed as PlanSkeleton);
+        break;
+      case "reply":
+        handlers.onReply?.(String(p.text ?? ""));
+        break;
+      case "day":
+        handlers.onDay?.(parsed as Itinerary["days"][number]);
+        break;
+      case "itinerary":
+        handlers.onItinerary?.(parsed as Itinerary);
+        break;
+      case "degraded":
+        handlers.onDegraded?.(String(p.reason ?? ""));
+        break;
+      case "done":
+        handlers.onDone?.();
+        break;
+    }
   };
 
-  return () => es.close();
+  (async () => {
+    try {
+      const res = await fetch(`${API_BASE}/plan/stream`, {
+        method: "POST",
+        headers: authHeaders({
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        }),
+        body: JSON.stringify(req),
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) {
+        throw new Error(`/plan/stream 返回 ${res.status}`);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // SSE 事件以空行分隔
+        let sep: number;
+        while ((sep = buffer.indexOf("\n\n")) !== -1) {
+          const block = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          let event = "message";
+          const dataLines: string[] = [];
+          for (const line of block.split("\n")) {
+            if (line.startsWith("event:")) event = line.slice(6).trim();
+            else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+          }
+          if (dataLines.length) dispatch(event, dataLines.join("\n"));
+        }
+      }
+    } catch (err) {
+      if ((err as Error).name === "AbortError") return;
+      handlers.onError?.(err instanceof Error ? err : new Error("规划流连接中断"));
+    }
+  })();
+
+  return () => controller.abort();
 }

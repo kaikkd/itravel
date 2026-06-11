@@ -1,31 +1,47 @@
-import { useState } from "react";
+import { useEffect } from "react";
 import {
   Car,
   Clock3,
+  Coffee,
   Footprints,
+  GripVertical,
+  Hotel,
   MapPin,
-  Plus,
   Sparkles,
   TrainFront,
-  Trash2,
+  Undo2,
+  Utensils,
   X,
 } from "lucide-react";
-import { Badge } from "../ui/badge";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "../ui/dialog";
-import { DEFAULT_TRANSIT, transitKey, useTripStore } from "../../store/tripStore";
-import type { Category, SuggestionPoi, TransitMode, TripDay } from "../../types";
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { useStore } from "zustand";
+import { Badge } from "../ui/badge";
+import { useItineraryStore, useTemporalStore } from "../../store/itineraryStore";
+import type { Category, Day, Stop, Transit, TransitMode } from "../../types";
 
 const CATEGORY_LABEL: Record<Category, string> = { eat: "吃", stay: "住", play: "玩" };
 const CATEGORY_VARIANT: Record<Category, "clay" | "moss" | "sky"> = {
   play: "sky",
   eat: "clay",
   stay: "moss",
+};
+const CATEGORY_ICON: Record<Category, typeof Utensils> = {
+  eat: Utensils,
+  stay: Hotel,
+  play: MapPin,
 };
 
 const MODES: { mode: TransitMode; icon: typeof Car; label: string }[] = [
@@ -35,301 +51,313 @@ const MODES: { mode: TransitMode; icon: typeof Car; label: string }[] = [
 ];
 
 function formatDuration(sec: number | null): string {
-  if (sec == null) return "";
+  if (sec == null) return "算时长";
   const min = Math.max(1, Math.round(sec / 60));
   if (min < 60) return `${min} 分钟`;
   return `${Math.floor(min / 60)} 小时 ${min % 60} 分`;
 }
 
 export default function ScheduleColumn() {
-  const days = useTripStore((s) => s.days);
-  const suggestions = useTripStore((s) => s.suggestions);
-  const hasSuggestions = useTripStore((s) => s.hasSuggestions);
-  const transits = useTripStore((s) => s.transits);
-  const fillSlot = useTripStore((s) => s.fillSlot);
-  const clearSlot = useTripStore((s) => s.clearSlot);
-  const addSlot = useTripStore((s) => s.addSlot);
-  const removeSlot = useTripStore((s) => s.removeSlot);
-  const setTransitMode = useTripStore((s) => s.setTransitMode);
-  const requestTransit = useTripStore((s) => s.requestTransit);
+  const itinerary = useItineraryStore((s) => s.itinerary);
+  const phase = useItineraryStore((s) => s.phase);
+  const degraded = useItineraryStore((s) => s.degraded);
+  const skeleton = useItineraryStore((s) => s.skeleton);
+  const removeStop = useItineraryStore((s) => s.removeStop);
+  const reorderStops = useItineraryStore((s) => s.reorderStops);
+  const setTransitMode = useItineraryStore((s) => s.setTransitMode);
+  const undo = useStore(useTemporalStore, (s) => s.undo);
+  const pastStates = useStore(useTemporalStore, (s) => s.pastStates);
 
-  const [openSlot, setOpenSlot] = useState<{ dayIndex: number; slotId: string } | null>(
-    null,
-  );
+  // Ctrl/Cmd+Z 撤销结构变更（PRD §13.4）
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo]);
 
-  const activeCandidates: SuggestionPoi[] = openSlot
-    ? suggestions[openSlot.dayIndex] ?? []
-    : [];
-  const usedNames = openSlot
-    ? new Set(
-        (days.find((d) => d.dayIndex === openSlot.dayIndex)?.slots ?? [])
-          .map((s) => s.poi?.name)
-          .filter(Boolean) as string[],
-      )
-    : new Set<string>();
-
-  function pickCandidate(poi: SuggestionPoi) {
-    if (!openSlot) return;
-    fillSlot(openSlot.dayIndex, openSlot.slotId, {
-      name: poi.name,
-      category: poi.category,
-      lng: poi.lng,
-      lat: poi.lat,
-      address: poi.address,
-      rec_reason: poi.rec_reason,
-    });
-    setOpenSlot(null);
-  }
+  const streaming = phase === "streaming";
+  const totalStops =
+    itinerary?.days.reduce((n, d) => n + d.stops.length, 0) ?? 0;
+  const empty = phase === "idle" || (!streaming && totalStops === 0);
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-line px-5 py-4">
-        <h2 className="text-lg font-semibold text-ink">行程表</h2>
-        <p className="text-xs text-stone">
-          {hasSuggestions
-            ? "点击闪烁的空位，从 itravel 候选里挑选地点。"
-            : "先和 itravel 聊聊，候选会出现在这里。"}
-        </p>
+      <div className="flex items-center justify-between border-b border-line px-5 py-4">
+        <div>
+          <h2 className="text-lg font-semibold text-ink">行程表</h2>
+          <p className="text-xs text-stone">
+            {streaming
+              ? "itravel 正在为你编排每日时间轴…"
+              : totalStops > 0
+                ? "拖动卡片可调整顺序，⌘/Ctrl+Z 撤销。"
+                : "先和 itravel 聊聊，行程会出现在这里。"}
+          </p>
+        </div>
+        {pastStates.length > 0 && (
+          <button
+            onClick={() => undo()}
+            title="撤销"
+            className="flex items-center gap-1 rounded-full border border-line bg-surface px-2.5 py-1 text-xs font-semibold text-stone transition-colors hover:border-clay hover:text-clay"
+          >
+            <Undo2 className="h-3.5 w-3.5" />
+            撤销
+          </button>
+        )}
       </div>
 
       <div className="flex-1 space-y-5 overflow-y-auto p-5">
-        {days.map((day) => (
+        {degraded && (
+          <div className="rounded-2xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
+            AI 暂不可用，已用热门地点兜底，仍可自由调整。
+          </div>
+        )}
+
+        {empty && <EmptyState />}
+
+        {streaming && skeleton && totalStops === 0 && (
+          <SkeletonDays count={skeleton.day_count} />
+        )}
+
+        {itinerary?.days.map((day) => (
           <DayBlock
-            key={day.dayIndex}
+            key={day.id}
             day={day}
-            hasSuggestions={hasSuggestions}
-            hasCandidates={(suggestions[day.dayIndex] ?? []).length > 0}
-            transits={transits}
-            onOpenSlot={(slotId) => setOpenSlot({ dayIndex: day.dayIndex, slotId })}
-            onClearSlot={(slotId) => clearSlot(day.dayIndex, slotId)}
-            onAddSlot={() => addSlot(day.dayIndex)}
-            onRemoveSlot={(slotId) => removeSlot(day.dayIndex, slotId)}
-            onSetMode={(slotId, mode) => setTransitMode(day.dayIndex, slotId, mode)}
-            onCompute={(slotId) => requestTransit(day.dayIndex, slotId)}
+            onRemove={(stopId) => removeStop(day.id, stopId)}
+            onReorder={(from, to) => reorderStops(day.id, from, to)}
+            onSetMode={(transitId, mode) => setTransitMode(day.id, transitId, mode)}
+            streaming={streaming}
           />
         ))}
       </div>
-
-      <Dialog open={openSlot != null} onOpenChange={(o) => !o && setOpenSlot(null)}>
-        <DialogContent className="max-w-xl">
-          <DialogHeader>
-            <DialogTitle>选择一个地点</DialogTitle>
-            <DialogDescription>
-              来自 itravel 的候选，点选后即加入行程并在地图打点。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="max-h-[60vh] space-y-2 overflow-y-auto">
-            {activeCandidates.length === 0 && (
-              <p className="text-sm text-stone">这一天还没有候选，回到对话框补充偏好。</p>
-            )}
-            {activeCandidates.map((poi) => {
-              const used = usedNames.has(poi.name);
-              return (
-                <button
-                  key={poi.name}
-                  disabled={used}
-                  onClick={() => pickCandidate(poi)}
-                  className={`w-full rounded-2xl border p-4 text-left transition-all ${
-                    used
-                      ? "cursor-not-allowed border-line bg-sand opacity-60"
-                      : "border-line bg-surface hover:border-clay"
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <Badge variant={CATEGORY_VARIANT[poi.category]}>
-                      {CATEGORY_LABEL[poi.category]}
-                    </Badge>
-                    <span className="font-semibold text-ink">{poi.name}</span>
-                    {used && <span className="text-xs text-stone">已加入</span>}
-                  </div>
-                  {poi.rec_reason && (
-                    <p className="mt-1.5 text-sm text-stone">{poi.rec_reason}</p>
-                  )}
-                  {poi.address && (
-                    <p className="mt-1 text-xs text-stone">{poi.address}</p>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div className="flex flex-col items-center justify-center gap-3 rounded-3xl border border-dashed border-line py-16 text-center">
+      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-clay-soft text-clay">
+        <Sparkles className="h-6 w-6" />
+      </div>
+      <p className="text-sm font-semibold text-ink">还没有行程</p>
+      <p className="max-w-xs text-xs text-stone">
+        在下方对话框描述你的旅行，比如「成都耍三天，爱吃辣，想轻松点」，
+        itravel 会为你排好每天的吃住玩。
+      </p>
+    </div>
+  );
+}
+
+function SkeletonDays({ count }: { count: number }) {
+  return (
+    <>
+      {Array.from({ length: count }).map((_, di) => (
+        <section
+          key={di}
+          className="rounded-3xl border border-line bg-ivory/60 p-4"
+          style={{ ["--i"]: di } as React.CSSProperties}
+        >
+          <div className="skeleton mb-3 h-5 w-24 rounded-full" />
+          <div className="space-y-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="skeleton h-16 rounded-2xl" />
+            ))}
+          </div>
+        </section>
+      ))}
+    </>
   );
 }
 
 function DayBlock({
   day,
-  hasSuggestions,
-  hasCandidates,
-  transits,
-  onOpenSlot,
-  onClearSlot,
-  onAddSlot,
-  onRemoveSlot,
+  onRemove,
+  onReorder,
   onSetMode,
-  onCompute,
+  streaming,
 }: {
-  day: TripDay;
-  hasSuggestions: boolean;
-  hasCandidates: boolean;
-  transits: Record<string, { mode: TransitMode; durationSeconds: number | null; showPath: boolean }>;
-  onOpenSlot: (slotId: string) => void;
-  onClearSlot: (slotId: string) => void;
-  onAddSlot: () => void;
-  onRemoveSlot: (slotId: string) => void;
-  onSetMode: (slotId: string, mode: TransitMode) => void;
-  onCompute: (slotId: string) => void;
+  day: Day;
+  onRemove: (stopId: number) => void;
+  onReorder: (from: number, to: number) => void;
+  onSetMode: (transitId: number, mode: TransitMode) => void;
+  streaming: boolean;
 }) {
-  const filledCount = day.slots.filter((s) => s.poi).length;
-  let order = 0;
-  let prevFilledId: string | null = null;
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  );
+
+  const transitBetween = (fromId: number, toId: number): Transit | undefined =>
+    day.transits.find((t) => t.from_stop_id === fromId && t.to_stop_id === toId);
+
+  function handleDragEnd(e: DragEndEvent) {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const from = day.stops.findIndex((s) => s.id === active.id);
+    const to = day.stops.findIndex((s) => s.id === over.id);
+    if (from !== -1 && to !== -1) onReorder(from, to);
+  }
 
   return (
-    <section className="rounded-3xl border border-line bg-ivory/60 p-4">
+    <section
+      className="rounded-3xl border border-line bg-ivory/60 p-4"
+      style={{ ["--i"]: day.day_index - 1 } as React.CSSProperties}
+    >
       <div className="mb-3 flex items-center justify-between">
-        <h3 className="font-serif text-base font-semibold text-ink">{day.label}</h3>
-        <Badge variant="soft">{filledCount} 个地点</Badge>
+        <h3 className="font-serif text-base font-semibold text-ink">
+          第 {day.day_index} 天
+        </h3>
+        <Badge variant="soft">{day.stops.length} 个安排</Badge>
       </div>
 
-      <div className="space-y-2">
-        {day.slots.map((slot) => {
-          if (slot.poi) {
-            order += 1;
-            const fromId = prevFilledId;
-            prevFilledId = slot.id;
-            const transit = fromId
-              ? transits[transitKey(day.dayIndex, fromId)] ?? DEFAULT_TRANSIT
-              : null;
-            return (
-              <div key={slot.id}>
-                {fromId && transit && (
-                  <TransitRow
-                    transit={transit}
-                    onSetMode={(mode) => onSetMode(fromId, mode)}
-                    onCompute={() => onCompute(fromId)}
-                  />
-                )}
-                <div className="flex items-start gap-3 rounded-2xl border border-line bg-surface p-3 shadow-soft">
-                  <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-clay text-xs font-bold text-white">
-                    {order}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <Badge variant={CATEGORY_VARIANT[slot.poi.category]}>
-                        {CATEGORY_LABEL[slot.poi.category]}
-                      </Badge>
-                      <span className="truncate font-semibold text-ink">
-                        {slot.poi.name}
-                      </span>
-                    </div>
-                    {slot.poi.rec_reason && (
-                      <p className="mt-1 text-sm text-stone">{slot.poi.rec_reason}</p>
+      {day.stops.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-line py-6 text-center text-xs text-stone">
+          {streaming ? "编排中…" : "这一天还空着"}
+        </div>
+      ) : (
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext
+            items={day.stops.map((s) => s.id)}
+            strategy={verticalListSortingStrategy}
+          >
+            <div className="space-y-1">
+              {day.stops.map((stop, i) => {
+                const prev = i > 0 ? day.stops[i - 1] : null;
+                const transit = prev ? transitBetween(prev.id, stop.id) : null;
+                return (
+                  <div key={stop.id}>
+                    {transit && (
+                      <TransitRow
+                        transit={transit}
+                        onSetMode={(mode) => onSetMode(transit.id, mode)}
+                      />
                     )}
-                    {slot.poi.lng == null && (
-                      <p className="mt-1 text-xs text-warning">坐标缺失，地图不打点。</p>
-                    )}
+                    <SortableStop
+                      stop={stop}
+                      order={i + 1}
+                      onRemove={() => onRemove(stop.id)}
+                    />
                   </div>
-                  <button
-                    onClick={() => onClearSlot(slot.id)}
-                    className="rounded-full p-1 text-stone hover:bg-sand hover:text-ink"
-                    aria-label="移除"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            );
-          }
-
-          const flashing = hasSuggestions && hasCandidates;
-          return (
-            <div key={slot.id} className="flex items-stretch gap-2">
-              <button
-                onClick={() => onOpenSlot(slot.id)}
-                disabled={!flashing}
-                className={`flex flex-1 items-center justify-center gap-2 rounded-2xl border-2 border-dashed p-4 text-sm font-medium transition-all ${
-                  flashing
-                    ? "slot-flash cursor-pointer border-clay-soft text-clay"
-                    : "cursor-default border-line text-stone"
-                }`}
-              >
-                {flashing ? (
-                  <>
-                    <Sparkles className="h-4 w-4" />
-                    点击添加地点
-                  </>
-                ) : (
-                  <>
-                    <MapPin className="h-4 w-4" />
-                    等待 itravel 候选
-                  </>
-                )}
-              </button>
-              <button
-                onClick={() => onRemoveSlot(slot.id)}
-                title="删除该位置"
-                aria-label="删除该位置"
-                className="flex w-10 shrink-0 items-center justify-center rounded-2xl border border-line text-stone transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-500"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
+                );
+              })}
             </div>
-          );
-        })}
-      </div>
-
-      <button
-        onClick={onAddSlot}
-        className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-stone hover:text-clay"
-      >
-        <Plus className="h-3 w-3" />
-        增加一个位置
-      </button>
+          </SortableContext>
+        </DndContext>
+      )}
     </section>
+  );
+}
+
+function SortableStop({
+  stop,
+  order,
+  onRemove,
+}: {
+  stop: Stop;
+  order: number;
+  onRemove: () => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: stop.id });
+  const Icon = CATEGORY_ICON[stop.poi.category] ?? MapPin;
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    ["--i" as string]: order - 1,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`stop-drop flex items-start gap-2.5 rounded-2xl border border-line bg-surface p-3 shadow-soft ${
+        isDragging ? "dragging" : ""
+      }`}
+    >
+      <button
+        {...attributes}
+        {...listeners}
+        className="mt-1 cursor-grab touch-none text-line-strong transition-colors hover:text-stone active:cursor-grabbing"
+        aria-label="拖拽排序"
+      >
+        <GripVertical className="h-4 w-4" />
+      </button>
+      <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-clay text-xs font-bold text-white">
+        {order}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <Badge variant={CATEGORY_VARIANT[stop.poi.category]}>
+            <Icon className="mr-0.5 h-3 w-3" />
+            {CATEGORY_LABEL[stop.poi.category]}
+          </Badge>
+          <span className="truncate font-semibold text-ink">{stop.poi.name}</span>
+          {stop.arrive_time && (
+            <span className="ml-auto flex items-center gap-1 text-xs text-stone">
+              <Coffee className="h-3 w-3" />
+              {stop.arrive_time}
+            </span>
+          )}
+        </div>
+        {stop.poi.rec_reason && (
+          <p className="mt-1 text-sm text-stone">{stop.poi.rec_reason}</p>
+        )}
+        <div className="mt-1 flex items-center gap-3 text-xs text-stone">
+          {stop.stay_minutes != null && <span>停留约 {stop.stay_minutes} 分钟</span>}
+          {stop.poi.address && <span className="truncate">{stop.poi.address}</span>}
+        </div>
+        {stop.poi.lng == null && (
+          <p className="mt-1 text-xs text-warning">坐标缺失，地图不打点。</p>
+        )}
+      </div>
+      <button
+        onClick={onRemove}
+        className="rounded-full p-1 text-stone transition-colors hover:bg-sand hover:text-ink"
+        aria-label="移除"
+      >
+        <X className="h-4 w-4" />
+      </button>
+    </div>
   );
 }
 
 function TransitRow({
   transit,
   onSetMode,
-  onCompute,
 }: {
-  transit: { mode: TransitMode; durationSeconds: number | null; showPath: boolean };
+  transit: Transit;
   onSetMode: (mode: TransitMode) => void;
-  onCompute: () => void;
 }) {
-  const computing = transit.showPath && transit.durationSeconds == null;
+  const mode = (transit.mode as TransitMode) ?? "driving";
   return (
     <div className="my-1 ml-3.5 flex items-center gap-2 border-l-2 border-dashed border-line-strong py-1 pl-4">
       <div className="flex items-center gap-1 rounded-full bg-sand p-0.5">
-        {MODES.map(({ mode, icon: Icon, label }) => (
+        {MODES.map(({ mode: m, icon: Icon, label }) => (
           <button
-            key={mode}
-            onClick={() => onSetMode(mode)}
+            key={m}
+            onClick={() => onSetMode(m)}
             title={label}
             className={`flex h-7 w-7 items-center justify-center rounded-full transition-all ${
-              transit.mode === mode
-                ? "bg-surface text-clay shadow-soft"
-                : "text-stone hover:text-ink"
+              mode === m ? "bg-surface text-clay shadow-soft" : "text-stone hover:text-ink"
             }`}
           >
             <Icon className="h-3.5 w-3.5" />
           </button>
         ))}
       </div>
-      <button
-        onClick={onCompute}
-        title="计算耗时"
-        className="flex h-7 items-center gap-1 rounded-full border border-line bg-surface px-2 text-xs font-semibold text-stone hover:border-clay hover:text-clay"
-      >
+      <span className="flex h-7 items-center gap-1 rounded-full border border-line bg-surface px-2 text-xs font-semibold text-stone">
         <Clock3 className="h-3.5 w-3.5" />
-        {computing
-          ? "计算中…"
-          : transit.durationSeconds != null
-            ? formatDuration(transit.durationSeconds)
-            : "算时长"}
-      </button>
+        {formatDuration(transit.duration_seconds)}
+      </span>
     </div>
   );
 }
