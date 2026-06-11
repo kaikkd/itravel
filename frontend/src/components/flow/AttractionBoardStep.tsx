@@ -36,6 +36,8 @@ export default function AttractionBoardStep() {
     degraded,
     setCity,
     setCandidates,
+    getCached,
+    showCached,
     setLoading,
     add,
     remove,
@@ -50,11 +52,20 @@ export default function AttractionBoardStep() {
     if (routeCity && city !== routeCity) setCity(routeCity);
   }, [routeCity, city, setCity]);
 
-  function loadCandidates(cat: Category, kw: string) {
+  // forceRefresh=true 跳过缓存（「换一批」用）。
+  function loadCandidates(cat: Category, kw: string, forceRefresh = false) {
     if (!routeCity) return;
+    const cacheKey = `${routeCity}|${cat}|${kw}`;
+    if (!forceRefresh) {
+      const cached = getCached(cacheKey);
+      if (cached) {
+        showCached(cached); // 命中缓存：直接展示，不请求
+        return;
+      }
+    }
     setLoading(true);
     fetchCandidates(routeCity, { category: cat, keyword: kw, limit: 8 })
-      .then((r) => setCandidates(r.pois, r.degraded))
+      .then((r) => setCandidates(r.pois, r.degraded, cacheKey))
       .catch(() => setCandidates([], true));
   }
 
@@ -105,7 +116,7 @@ export default function AttractionBoardStep() {
               ))}
             </div>
             <button
-              onClick={() => loadCandidates(category, keyword)}
+              onClick={() => loadCandidates(category, keyword, true)}
               title="换一批"
               className="flex h-9 w-9 items-center justify-center rounded-full border border-line text-stone transition-colors hover:border-clay hover:text-clay"
             >
