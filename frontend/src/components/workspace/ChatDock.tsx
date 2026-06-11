@@ -77,7 +77,7 @@ export default function ChatDock() {
         <span className="text-xs font-semibold text-ink">和 itravel 对话</span>
       </div>
 
-      <div className="max-h-[18vh] min-h-0 flex-1 overflow-y-auto px-4 py-2">
+      <div className="max-h-[12vh] min-h-0 flex-1 overflow-y-auto px-4 py-1.5">
         {hasMessages ? (
           <MessageList
             messages={messages}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Car,
   Clock3,
@@ -10,7 +10,6 @@ import {
   Plus,
   Sparkles,
   TrainFront,
-  Undo2,
   Utensils,
   X,
 } from "lucide-react";
@@ -28,7 +27,6 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { useStore } from "zustand";
 import { Badge } from "../ui/badge";
 import {
   Dialog,
@@ -39,7 +37,7 @@ import {
 } from "../ui/dialog";
 import { fetchCandidates } from "../../api/client";
 import { usePlanFlowStore } from "../../store/planFlowStore";
-import { useItineraryStore, useTemporalStore } from "../../store/itineraryStore";
+import { useItineraryStore } from "../../store/itineraryStore";
 import type { Category, Day, POI, Stop, Transit, TransitMode } from "../../types";
 
 const CATEGORY_LABEL: Record<Category, string> = { eat: "吃", stay: "住", play: "玩" };
@@ -80,24 +78,10 @@ export default function ScheduleColumn() {
   const setSelectedDay = useItineraryStore((s) => s.setSelectedDay);
   const city = usePlanFlowStore((s) => s.primaryDestination)();
 
-  const undo = useStore(useTemporalStore, (s) => s.undo);
-  const pastStates = useStore(useTemporalStore, (s) => s.pastStates);
-
   // 手动加点弹窗（#1）：记录目标天，拉候选供挑选。
   const [addDay, setAddDay] = useState<number | null>(null);
   const [candidates, setCandidates] = useState<POI[]>([]);
   const [loadingCands, setLoadingCands] = useState(false);
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
-        e.preventDefault();
-        undo();
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [undo]);
 
   function openAdd(dayIndex: number) {
     setAddDay(dayIndex);
@@ -129,31 +113,7 @@ export default function ScheduleColumn() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* 轻量头部（非卡片外壳）：标题 + 撤销，固定不滚动 */}
-      <div className="flex items-center justify-between px-1 pb-3">
-        <div>
-          <h2 className="text-lg font-semibold text-ink">行程表</h2>
-          <p className="text-xs text-stone">
-            {streaming
-              ? "itravel 正在为你编排每日时间轴…"
-              : totalStops > 0
-                ? "点某天或某地点 → 地图聚焦那天 · 拖动排序 · ⌘/Ctrl+Z 撤销"
-                : "先和 itravel 聊聊，行程会出现在这里。"}
-          </p>
-        </div>
-        {pastStates.length > 0 && (
-          <button
-            onClick={() => undo()}
-            title="撤销"
-            className="flex items-center gap-1 rounded-full border border-line bg-surface px-2.5 py-1 text-xs font-semibold text-stone transition-colors hover:border-clay hover:text-clay"
-          >
-            <Undo2 className="h-3.5 w-3.5" />
-            撤销
-          </button>
-        )}
-      </div>
-
-      <div className="flex-1 space-y-4 overflow-y-auto px-1 pb-2">
+      <div className="flex-1 space-y-4 overflow-y-auto px-1 py-1">
         {degraded && (
           <div className="rounded-2xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
             AI 暂不可用，已用热门地点兜底，仍可自由调整。
