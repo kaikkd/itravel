@@ -41,7 +41,7 @@ export function loadAMap(): Promise<AMapNamespace> {
   loadPromise = AMapLoader.load({
     key: KEY.trim(),
     version: "2.0",
-    plugins: ["AMap.Driving", "AMap.Walking", "AMap.Transfer"],
+    plugins: ["AMap.Driving", "AMap.Walking", "AMap.Transfer", "AMap.MarkerCluster"],
   });
   return loadPromise;
 }

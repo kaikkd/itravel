@@ -76,6 +76,8 @@ export default function ScheduleColumn() {
   const reorderStops = useItineraryStore((s) => s.reorderStops);
   const setTransitMode = useItineraryStore((s) => s.setTransitMode);
   const selectCandidate = useItineraryStore((s) => s.selectCandidate);
+  const selectedDayIndex = useItineraryStore((s) => s.selectedDayIndex);
+  const setSelectedDay = useItineraryStore((s) => s.setSelectedDay);
   const city = usePlanFlowStore((s) => s.primaryDestination)();
 
   const undo = useStore(useTemporalStore, (s) => s.undo);
@@ -127,14 +129,15 @@ export default function ScheduleColumn() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-line px-5 py-4">
+      {/* 轻量头部（非卡片外壳）：标题 + 撤销，固定不滚动 */}
+      <div className="flex items-center justify-between px-1 pb-3">
         <div>
           <h2 className="text-lg font-semibold text-ink">行程表</h2>
           <p className="text-xs text-stone">
             {streaming
               ? "itravel 正在为你编排每日时间轴…"
               : totalStops > 0
-                ? "拖动卡片调整顺序 · ⌘/Ctrl+Z 撤销 · 点每天「加地点」补充"
+                ? "点某天或某地点 → 地图聚焦那天 · 拖动排序 · ⌘/Ctrl+Z 撤销"
                 : "先和 itravel 聊聊，行程会出现在这里。"}
           </p>
         </div>
@@ -150,7 +153,7 @@ export default function ScheduleColumn() {
         )}
       </div>
 
-      <div className="flex-1 space-y-4 overflow-y-auto p-5">
+      <div className="flex-1 space-y-4 overflow-y-auto px-1 pb-2">
         {degraded && (
           <div className="rounded-2xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
             AI 暂不可用，已用热门地点兜底，仍可自由调整。
@@ -167,6 +170,8 @@ export default function ScheduleColumn() {
           <DayBlock
             key={day.id}
             day={day}
+            active={day.day_index === selectedDayIndex}
+            onActivate={() => setSelectedDay(day.day_index)}
             onRemove={(stopId) => removeStop(day.id, stopId)}
             onReorder={(from, to) => reorderStops(day.id, from, to)}
             onSetMode={(transitId, mode) => setTransitMode(day.id, transitId, mode)}
@@ -276,6 +281,8 @@ function SkeletonDays({ count }: { count: number }) {
 
 function DayBlock({
   day,
+  active,
+  onActivate,
   onRemove,
   onReorder,
   onSetMode,
@@ -283,6 +290,8 @@ function DayBlock({
   streaming,
 }: {
   day: Day;
+  active: boolean;
+  onActivate: () => void;
   onRemove: (stopId: number) => void;
   onReorder: (from: number, to: number) => void;
   onSetMode: (transitId: number, mode: TransitMode) => void;
@@ -297,20 +306,31 @@ function DayBlock({
     day.transits.find((t) => t.from_stop_id === fromId && t.to_stop_id === toId);
 
   function handleDragEnd(e: DragEndEvent) {
-    const { active, over } = e;
-    if (!over || active.id === over.id) return;
-    const from = day.stops.findIndex((s) => s.id === active.id);
+    const { active: a, over } = e;
+    if (!over || a.id === over.id) return;
+    const from = day.stops.findIndex((s) => s.id === a.id);
     const to = day.stops.findIndex((s) => s.id === over.id);
     if (from !== -1 && to !== -1) onReorder(from, to);
   }
 
   return (
     <section
-      className="day-enter overflow-hidden rounded-3xl border border-line bg-ivory/50"
+      onClick={onActivate}
+      className={`day-enter cursor-pointer overflow-hidden rounded-3xl border bg-ivory/50 transition-all ${
+        active
+          ? "border-clay shadow-soft ring-1 ring-clay/30"
+          : "border-line hover:border-clay-soft"
+      }`}
       style={{ ["--i"]: day.day_index - 1 } as React.CSSProperties}
     >
-      {/* 醒目的天标题，营造 schedule 的层次（#2） */}
-      <div className="flex items-center justify-between bg-gradient-to-r from-clay/10 to-transparent px-4 py-3">
+      {/* 醒目的天标题，营造 schedule 的层次（#2）；点击聚焦该天地图（#3） */}
+      <div
+        className={`flex items-center justify-between px-4 py-3 ${
+          active
+            ? "bg-gradient-to-r from-clay/18 to-transparent"
+            : "bg-gradient-to-r from-clay/10 to-transparent"
+        }`}
+      >
         <div className="flex items-center gap-2.5">
           <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-clay text-sm font-black text-white shadow-soft">
             D{day.day_index}
@@ -318,6 +338,11 @@ function DayBlock({
           <h3 className="font-serif text-base font-semibold text-ink">
             第 {day.day_index} 天
           </h3>
+          {active && (
+            <span className="rounded-full bg-clay/15 px-2 py-0.5 text-[11px] font-semibold text-clay">
+              地图显示中
+            </span>
+          )}
         </div>
         <Badge variant="soft">{day.stops.length} 个安排</Badge>
       </div>

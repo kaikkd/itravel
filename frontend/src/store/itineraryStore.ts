@@ -124,6 +124,9 @@ export const useItineraryStore = create<ItineraryState>()(
         set((state) => {
           state.itinerary = itinerary;
           state.phase = "done";
+          // 默认聚焦第一个有地点的天，保证行程表高亮与地图一致。
+          const firstWithStops = itinerary.days.find((d) => d.stops.length > 0);
+          if (firstWithStops) state.selectedDayIndex = firstWithStops.day_index;
         }),
       setPhase: (phase) =>
         set((state) => {

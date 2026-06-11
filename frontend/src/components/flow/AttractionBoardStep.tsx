@@ -74,13 +74,13 @@ export default function AttractionBoardStep() {
   return (
     <div className="flex min-h-screen items-center justify-center px-6 py-12">
       <div
-        className="floating-card grid w-full max-w-6xl gap-0 overflow-hidden md:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]"
+        className="floating-card grid max-h-[86vh] w-full max-w-6xl grid-rows-[minmax(0,1fr)] gap-0 overflow-hidden md:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]"
         style={{
           animation: leaving ? "var(--animate-rise-out)" : "var(--animate-rise-in)",
         }}
       >
-        {/* 左：候选货架 */}
-        <div className="flex flex-col gap-4 border-b border-line p-7 md:border-b-0 md:border-r">
+        {/* 左：候选货架（标题/类目/搜索固定，候选列表内滚动） */}
+        <div className="flex min-h-0 flex-col gap-4 border-b border-line p-7 md:border-b-0 md:border-r">
           <div>
             <Badge variant="clay">第 2 步 · 选景点</Badge>
             <h2 className="mt-3 font-serif text-2xl font-semibold text-ink">
@@ -124,7 +124,10 @@ export default function AttractionBoardStep() {
             />
           </div>
 
-          <div className="min-h-[280px] space-y-2">
+          {degraded && (
+            <p className="shrink-0 text-xs text-warning">AI 暂不可用，以下为兜底候选。</p>
+          )}
+          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
             {loadingCandidates ? (
               <div className="flex items-center justify-center gap-2 py-16 text-sm text-stone">
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -142,14 +145,11 @@ export default function AttractionBoardStep() {
                 />
               ))
             )}
-            {degraded && (
-              <p className="text-xs text-warning">AI 暂不可用，以下为兜底候选。</p>
-            )}
           </div>
         </div>
 
         {/* 右：已选堆叠 */}
-        <div className="flex flex-col bg-ivory/40 p-7">
+        <div className="flex min-h-0 flex-col bg-ivory/40 p-7">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="font-serif text-lg font-semibold text-ink">已选清单</h3>
             <Badge variant="soft">已选 {items.length} 个</Badge>

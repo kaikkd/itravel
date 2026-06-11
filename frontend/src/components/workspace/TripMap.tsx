@@ -49,6 +49,7 @@ function filledStops(days: Day[]): FilledStop[] {
   return out;
 }
 
+// 激活天的点：clay 色 + 序号 + 名称气泡。
 function pinContent(order: number, label: string): string {
   return `
     <div style="transform:translate(-50%,-100%);display:flex;flex-direction:column;align-items:center;">
@@ -56,6 +57,14 @@ function pinContent(order: number, label: string): string {
         ${order}. ${label}
       </div>
       <div style="width:2px;height:10px;background:#c96442;"></div>
+    </div>`;
+}
+
+// 非激活天的点：弱化为小灰点，减少重叠干扰。
+function dimPinContent(): string {
+  return `
+    <div style="transform:translate(-50%,-50%);">
+      <div style="width:10px;height:10px;border-radius:999px;background:#b9b1a3;border:2px solid #fffdf9;box-shadow:0 2px 6px rgba(60,45,30,.2);"></div>
     </div>`;
 }
 
@@ -131,6 +140,7 @@ function easeInOut(t: number): number {
 
 export default function TripMap({ collapsed = false }: { collapsed?: boolean }) {
   const itinerary = useItineraryStore((s) => s.itinerary);
+  const selectedDayIndex = useItineraryStore((s) => s.selectedDayIndex);
   const applyTransitResult = useItineraryStore((s) => s.applyTransitResult);
   const outbound = useFlightStore((s) => s.outbound);
   const returnFlight = useFlightStore((s) => s.returnFlight);
@@ -145,6 +155,7 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
   const mapRef = useRef<AMapAny>(null);
   const amapRef = useRef<AMapAny>(null);
   const overlaysRef = useRef<AMapAny[]>([]);
+  const clusterRef = useRef<AMapAny>(null);
   const pathCacheRef = useRef<
     Map<string, { path: [number, number][]; duration: number | null; distance: number | null }>
   >(new Map());
@@ -359,7 +370,7 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     }
   }, [ready, flightsConfirmed, mode, primaryDestination]);
 
-  // 行程打点 + 路径渲染（每段都渲染所选小交通）。
+  // 行程打点 + 路径渲染：非激活天弱化并聚合，仅激活天高亮打点 + 画路线（#3）。
   useEffect(() => {
     const map = mapRef.current;
     const AMap = amapRef.current;
@@ -370,30 +381,79 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     const seq = ++drawSeqRef.current;
     map.remove(overlaysRef.current);
     overlaysRef.current = [];
+    if (clusterRef.current) {
+      clusterRef.current.setMap(null);
+      clusterRef.current = null;
+    }
 
-    const stops = filledStops(days);
-    for (const stop of stops) {
-      const marker = new AMap.Marker({
-        position: [stop.lng, stop.lat],
-        content: pinContent(stop.order, stop.name),
-        offset: new AMap.Pixel(0, 0),
+    // 选出激活天（缺省回退到第一个有点的天）。
+    const daysWithPts = days.filter((d) =>
+      d.stops.some((s) => s.poi.lng != null && s.poi.lat != null),
+    );
+    const activeDay =
+      daysWithPts.find((d) => d.day_index === selectedDayIndex) ?? daysWithPts[0];
+
+    // 非激活天的点：聚合为小灰点，减少重叠（MarkerCluster 不可用时退化为直接打点）。
+    const dimData: { lnglat: [number, number] }[] = [];
+    for (const day of daysWithPts) {
+      if (activeDay && day.day_index === activeDay.day_index) continue;
+      for (const s of day.stops) {
+        if (s.poi.lng != null && s.poi.lat != null) {
+          dimData.push({ lnglat: [s.poi.lng, s.poi.lat] });
+        }
+      }
+    }
+    if (dimData.length && AMap.MarkerCluster) {
+      clusterRef.current = new AMap.MarkerCluster(map, dimData, {
+        gridSize: 60,
+        renderMarker: (ctx: AMapAny) => {
+          ctx.marker.setContent(dimPinContent());
+          ctx.marker.setOffset(new AMap.Pixel(0, 0));
+        },
       });
-      overlaysRef.current.push(marker);
-    }
-    if (overlaysRef.current.length > 0) {
-      map.add(overlaysRef.current);
-      map.setFitView(overlaysRef.current, false, [80, 80, 80, 80]);
+    } else if (dimData.length) {
+      for (const d of dimData) {
+        const m = new AMap.Marker({
+          position: d.lnglat,
+          content: dimPinContent(),
+          offset: new AMap.Pixel(0, 0),
+        });
+        overlaysRef.current.push(m);
+      }
     }
 
-    // 按天相邻 filled 段：渲染路径并标注方式+时长，结果回写 SSOT。
-    for (const day of days) {
-      const dayStops = day.stops.filter(
+    // 激活天的点：高亮序号气泡。
+    const activeMarkers: AMapAny[] = [];
+    if (activeDay) {
+      let order = 0;
+      for (const s of activeDay.stops) {
+        if (s.poi.lng == null || s.poi.lat == null) continue;
+        order += 1;
+        const marker = new AMap.Marker({
+          position: [s.poi.lng, s.poi.lat],
+          content: pinContent(order, s.poi.name),
+          offset: new AMap.Pixel(0, 0),
+          zIndex: 150,
+        });
+        activeMarkers.push(marker);
+        overlaysRef.current.push(marker);
+      }
+    }
+    if (overlaysRef.current.length > 0) map.add(overlaysRef.current);
+    // 视野聚焦到激活天的点（无点则保持当前视野）。
+    if (activeMarkers.length > 0) {
+      map.setFitView(activeMarkers, false, [90, 90, 90, 90]);
+    }
+
+    // 仅画激活天的相邻段路线，标注方式+时长，结果回写 SSOT。
+    if (activeDay) {
+      const dayStops = activeDay.stops.filter(
         (s) => s.poi.lng != null && s.poi.lat != null,
       );
       for (let i = 0; i < dayStops.length - 1; i++) {
         const from = dayStops[i];
         const to = dayStops[i + 1];
-        const transit = day.transits.find(
+        const transit = activeDay.transits.find(
           (t) => t.from_stop_id === from.id && t.to_stop_id === to.id,
         );
         if (!transit) continue;
@@ -403,7 +463,7 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, collapsed, reopenNonce, itinerary, mode, flightsConfirmed]);
+  }, [ready, collapsed, reopenNonce, itinerary, selectedDayIndex, mode, flightsConfirmed]);
 
   function drawSegment(
     seq: number,

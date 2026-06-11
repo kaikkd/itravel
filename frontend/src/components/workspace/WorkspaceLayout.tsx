@@ -22,17 +22,19 @@ export default function WorkspaceLayout() {
   const chatActive = mode === "route_first" || flightsConfirmed;
 
   const [showIntro, setShowIntro] = useState(false);
-  // 进入工作台先不展示地图；选到地点（或已有行程）后再展开（#6）。
-  const [mapCollapsed, setMapCollapsed] = useState(true);
+  // 交通优先：进入即展示地图（飞行/高铁动画在地图上）。
+  // 路线优先：先不展示地图，选到地点后再展开（#6）。
+  const [mapCollapsed, setMapCollapsed] = useState(mode !== "traffic_first");
   const userToggledMap = useRef(false);
   const introShownRef = useRef(false);
 
-  // 一旦有了行程地点，自动展开地图一次（用户之后可手动收起，不再自动覆盖）。
+  // 触发展开地图的条件：交通优先（看大交通动画）或已有行程地点。用户手动收起后不再自动覆盖。
   useEffect(() => {
-    if (hasItinerary && !userToggledMap.current) {
+    if (userToggledMap.current) return;
+    if (mode === "traffic_first" || hasItinerary) {
       setMapCollapsed(false);
     }
-  }, [hasItinerary]);
+  }, [mode, hasItinerary, flightsConfirmed]);
 
   // 进入聊天阶段时一次性浮现中心提示，约 2s 后吹散并触发对话框边缘闪烁。
   useEffect(() => {
@@ -73,9 +75,17 @@ export default function WorkspaceLayout() {
             transition: `flex-basis 500ms ${ease}`,
           }}
         >
-          <div className="min-h-0 flex-1 overflow-hidden rounded-3xl border border-line bg-surface shadow-soft">
-            {showFlights ? <FlightBoard /> : <ScheduleColumn />}
-          </div>
+          {showFlights ? (
+            // 机票分支保留卡片外观
+            <div className="min-h-0 flex-1 overflow-hidden rounded-3xl border border-line bg-surface shadow-soft">
+              <FlightBoard />
+            </div>
+          ) : (
+            // 行程表分支去掉外层卡壳：每天的卡片直接作为顶层卡片，在此区域内滚动（#2）
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <ScheduleColumn />
+            </div>
+          )}
           {chatActive && (
             <div className="shrink-0 overflow-hidden rounded-3xl border border-line bg-surface shadow-soft">
               <ChatDock />
@@ -129,8 +139,8 @@ export default function WorkspaceLayout() {
         )}
       </main>
 
-      {/* 折叠后右下角浮标：重新展开地图。仅在有行程时出现，避免空状态下误导。 */}
-      {mapCollapsed && hasItinerary && (
+      {/* 折叠后右下角浮标：重新展开地图。有行程或交通优先（看大交通动画）时可用。 */}
+      {mapCollapsed && (hasItinerary || mode === "traffic_first") && (
         <button
           onClick={expandMap}
           title="展开地图"
