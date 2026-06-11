@@ -13,20 +13,37 @@ export default function RouteStartChoice() {
   const setDraftCity = useDraftPoisStore((s) => s.setCity);
 
   const [picking, setPicking] = useState(false); // 选了「已有城市」→ 展开城市搜索
-  const [leaving, setLeaving] = useState(false);
+  const [leaving, setLeaving] = useState(false); // 两卡选择视图离场
+  const [pickerLeaving, setPickerLeaving] = useState(false); // 城市选择视图离场（返回）
   const [query, setQuery] = useState("");
   const results = useMemo(() => searchCities(query), [query]);
 
   function pickHasCity() {
+    if (leaving) return;
     setRouteStart("has_city");
-    setPicking(true);
+    // 先让两卡淡出上浮，再切到城市选择视图（带 rise-in），避免硬切。
+    setLeaving(true);
+    window.setTimeout(() => {
+      setPicking(true);
+      setLeaving(false);
+    }, 480);
+  }
+
+  function backToChoice() {
+    if (pickerLeaving) return;
+    // 城市选择视图淡出后再切回两卡视图。
+    setPickerLeaving(true);
+    window.setTimeout(() => {
+      setPicking(false);
+      setPickerLeaving(false);
+    }, 420);
   }
 
   function confirmCity(city: string) {
-    if (leaving) return;
+    if (pickerLeaving) return;
     setRouteCity(city);
     setDraftCity(city);
-    setLeaving(true);
+    setPickerLeaving(true);
     window.setTimeout(() => navigate("/plan/route/attractions"), 460);
   }
 
@@ -42,7 +59,11 @@ export default function RouteStartChoice() {
       <div className="flex min-h-screen flex-col items-center justify-center px-6 py-16">
         <div
           className="floating-card w-full max-w-2xl p-8"
-          style={{ animation: "var(--animate-rise-in)" }}
+          style={{
+            animation: pickerLeaving
+              ? "var(--animate-rise-out)"
+              : "var(--animate-rise-in)",
+          }}
         >
           <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-line bg-surface px-3 py-1 text-xs font-semibold text-clay">
             <MapPin className="h-3.5 w-3.5" />
@@ -79,7 +100,7 @@ export default function RouteStartChoice() {
           </div>
 
           <button
-            onClick={() => setPicking(false)}
+            onClick={backToChoice}
             className="mt-6 text-sm font-semibold text-stone hover:text-clay"
           >
             ← 返回选择
@@ -110,7 +131,14 @@ export default function RouteStartChoice() {
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center px-6 py-16">
-      <div className="mb-12 text-center" style={{ animation: "var(--animate-rise-in)" }}>
+      <div
+        className="mb-12 text-center"
+        style={{
+          animation: leaving
+            ? "var(--animate-rise-out)"
+            : "var(--animate-rise-in)",
+        }}
+      >
         <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-line bg-surface px-4 py-1.5 text-sm font-semibold text-clay">
           <Sparkles className="h-4 w-4" />
           从游玩景点开始
