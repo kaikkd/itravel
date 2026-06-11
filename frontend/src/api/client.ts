@@ -1,4 +1,10 @@
-import type { Category, Itinerary, ItinerarySummary, POI } from "../types";
+import type {
+  Category,
+  Itinerary,
+  ItinerarySummary,
+  POI,
+  SuggestionResponse,
+} from "../types";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
 
@@ -240,6 +246,31 @@ export async function recomputeTransits(
   }
   const body = (await res.json()) as { results: SegmentResult[] };
   return body.results;
+}
+
+// ---- 结构化候选（结合出发/目的/返回 + 偏好 + 自由文本） ----
+
+export interface SuggestRequest {
+  destination: string;
+  origin?: string;
+  return_city?: string;
+  day_count?: number;
+  preferences?: string[];
+  free_text?: string;
+}
+
+export async function suggestItinerary(
+  req: SuggestRequest,
+): Promise<SuggestionResponse> {
+  const res = await fetch(`${API_BASE}/plan/suggestions`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) {
+    throw new Error(`/plan/suggestions 返回 ${res.status}`);
+  }
+  return res.json();
 }
 
 export interface PlanHandlers {

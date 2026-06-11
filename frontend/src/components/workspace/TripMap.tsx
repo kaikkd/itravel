@@ -1,0 +1,496 @@
+import { useEffect, useRef, useState } from "react";
+import { MapPinned } from "lucide-react";
+import { AMapNotConfigured, isAMapConfigured, loadAMap } from "../../lib/amap";
+import { findCity } from "../../lib/cityCatalog";
+import { useTripStore, transitKey } from "../../store/tripStore";
+import { usePlanFlowStore } from "../../store/planFlowStore";
+import type { SlotPoi, TransitMode, TripDay } from "../../types";
+
+type AMapAny = any; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+interface FilledStop {
+  dayIndex: number;
+  slotId: string;
+  order: number;
+  poi: SlotPoi & { lng: number; lat: number };
+}
+
+const MODE_COLOR: Record<TransitMode, string> = {
+  driving: "#c96442",
+  transit: "#3f6f8f",
+  walking: "#4f7a5b",
+};
+
+const MODE_LABEL: Record<TransitMode, string> = {
+  driving: "驾车",
+  transit: "公共交通",
+  walking: "步行",
+};
+
+function filledStops(days: TripDay[]): FilledStop[] {
+  const out: FilledStop[] = [];
+  let order = 0;
+  for (const day of days) {
+    for (const slot of day.slots) {
+      if (slot.poi && slot.poi.lng != null && slot.poi.lat != null) {
+        order += 1;
+        out.push({
+          dayIndex: day.dayIndex,
+          slotId: slot.id,
+          order,
+          poi: slot.poi as SlotPoi & { lng: number; lat: number },
+        });
+      }
+    }
+  }
+  return out;
+}
+
+function pinContent(order: number, label: string): string {
+  return `
+    <div style="transform:translate(-50%,-100%);display:flex;flex-direction:column;align-items:center;">
+      <div style="background:#c96442;color:#fff;font:600 12px/1 Inter,sans-serif;padding:6px 9px;border-radius:999px;box-shadow:0 6px 16px rgba(60,45,30,.28);white-space:nowrap;">
+        ${order}. ${label}
+      </div>
+      <div style="width:2px;height:10px;background:#c96442;"></div>
+    </div>`;
+}
+
+// 二次贝塞尔上拱弧线：sign 控制偏移方向（去/返程分开）。
+function bezierArc(
+  from: [number, number],
+  to: [number, number],
+  sign: number,
+): [number, number][] {
+  const [x1, y1] = from;
+  const [x2, y2] = to;
+  const mx = (x1 + x2) / 2;
+  const my = (y1 + y2) / 2;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const dist = Math.hypot(dx, dy) || 1;
+  const nx = -dy / dist;
+  const ny = dx / dist;
+  const lift = dist * 0.26 * sign;
+  const cx = mx + nx * lift;
+  const cy = my + ny * lift;
+  const N = 64;
+  const pts: [number, number][] = [];
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const a = 1 - t;
+    pts.push([
+      a * a * x1 + 2 * a * t * cx + t * t * x2,
+      a * a * y1 + 2 * a * t * cy + t * t * y2,
+    ]);
+  }
+  return pts;
+}
+
+// 屏幕旋转角：地图纬度向上而 CSS rotate 顺时针(y 向下)，需取负把数学角转成屏幕角。
+// 朝东(0°)的纸飞机按此角旋转后，机头即对准航班前进方向。
+function bearingDeg(a: [number, number], b: [number, number]): number {
+  return (-Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI;
+}
+
+function planeContent(angleDeg: number): string {
+  // 朝东(0°)的俯视客机剪影，按航向旋转。
+  return `
+    <div style="transform:translate(-50%,-50%) rotate(${angleDeg}deg);filter:drop-shadow(0 3px 6px rgba(60,45,30,.35));">
+      <svg width="30" height="30" viewBox="0 0 32 32">
+        <path d="M30 16 C30 17 29 17.6 27.6 17.8 L20 19 L15.5 27 C15.2 27.6 14.7 28 14 28 L12.4 28 L14.2 19.4 L7.6 20.4 L5.6 23.2 C5.4 23.5 5.1 23.7 4.7 23.7 L3.4 23.7 L4.6 19.2 L3.4 16 L4.6 12.8 L3.4 8.3 L4.7 8.3 C5.1 8.3 5.4 8.5 5.6 8.8 L7.6 11.6 L14.2 12.6 L12.4 4 L14 4 C14.7 4 15.2 4.4 15.5 5 L20 13 L27.6 14.2 C29 14.4 30 15 30 16 Z"
+          fill="#c96442" stroke="#fffdf9" stroke-width="0.8" stroke-linejoin="round"/>
+      </svg>
+    </div>`;
+}
+
+export default function TripMap({ collapsed = false }: { collapsed?: boolean }) {
+  const days = useTripStore((s) => s.days);
+  const transits = useTripStore((s) => s.transits);
+  const outbound = useTripStore((s) => s.outbound);
+  const returnFlight = useTripStore((s) => s.returnFlight);
+  const flightsConfirmed = useTripStore((s) => s.flightsConfirmed);
+  const setTransitResult = useTripStore((s) => s.setTransitResult);
+  const mode = usePlanFlowStore((s) => s.mode);
+  const origin = usePlanFlowStore((s) => s.origin);
+  const primaryDestination = usePlanFlowStore((s) => s.primaryDestination)();
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<AMapAny>(null);
+  const amapRef = useRef<AMapAny>(null);
+  const overlaysRef = useRef<AMapAny[]>([]);
+  const pathCacheRef = useRef<
+    Map<string, { path: [number, number][]; duration: number | null; distance: number | null }>
+  >(new Map());
+  const drawSeqRef = useRef(0);
+  const flightOverlaysRef = useRef<AMapAny[]>([]);
+  const animatedFlightIdsRef = useRef<Set<string>>(new Set());
+  const rafIdsRef = useRef<number[]>([]);
+  const [ready, setReady] = useState(false);
+  const [reopenNonce, setReopenNonce] = useState(0);
+  const [loadError, setLoadError] = useState("");
+
+  // 展开时（折叠→展开）等宽度过渡结束后 resize + 触发一次重绘刷新。
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready || collapsed) return;
+    const t = setTimeout(() => {
+      map.resize?.();
+      setReopenNonce((n) => n + 1);
+    }, 520);
+    return () => clearTimeout(t);
+  }, [collapsed, ready]);
+
+  // 初始化标准图层地图（非卫星）。
+  useEffect(() => {
+    if (!isAMapConfigured()) {
+      setLoadError("地图未配置 Key，已降级为坐标列表。");
+      return;
+    }
+    let cancelled = false;
+    loadAMap()
+      .then((AMap: AMapAny) => {
+        if (cancelled || !containerRef.current) return;
+        amapRef.current = AMap;
+        mapRef.current = new AMap.Map(containerRef.current, {
+          zoom: 5,
+          center: [104.066, 35],
+          viewMode: "2D",
+          mapStyle: "amap://styles/normal",
+        });
+        setReady(true);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setLoadError(
+          err instanceof AMapNotConfigured
+            ? "地图未配置 Key，已降级为坐标列表。"
+            : "地图加载失败，已降级为坐标列表。",
+        );
+      });
+    return () => {
+      cancelled = true;
+      if (mapRef.current) {
+        mapRef.current.destroy();
+        mapRef.current = null;
+      }
+    };
+  }, []);
+
+  // 机票曲线飞行动画（交通优先、确认前）。
+  useEffect(() => {
+    const map = mapRef.current;
+    const AMap = amapRef.current;
+    if (!map || !AMap || !ready || collapsed) return;
+
+    // 确认机票或离开交通优先 → 清除航线与飞机。
+    if (mode !== "traffic_first" || flightsConfirmed) {
+      if (flightOverlaysRef.current.length) {
+        map.remove(flightOverlaysRef.current);
+        flightOverlaysRef.current = [];
+      }
+      animatedFlightIdsRef.current.clear();
+      return;
+    }
+
+    const fromAir = findCity(origin)?.airport ?? outbound?.from;
+    const toAir = findCity(primaryDestination)?.airport ?? outbound?.to;
+    if (!fromAir || !toAir) return;
+
+    const legs: { id: string; from: [number, number]; to: [number, number]; sign: number }[] = [];
+    if (outbound) {
+      legs.push({
+        id: outbound.id,
+        from: [fromAir.lng, fromAir.lat],
+        to: [toAir.lng, toAir.lat],
+        sign: 1,
+      });
+    }
+    if (returnFlight) {
+      // 返程方向已反向，相同 sign 即弯向相反侧，两条弧不重叠。
+      legs.push({
+        id: returnFlight.id,
+        from: [toAir.lng, toAir.lat],
+        to: [fromAir.lng, fromAir.lat],
+        sign: 1,
+      });
+    }
+
+    let fitted = false;
+    for (const leg of legs) {
+      if (animatedFlightIdsRef.current.has(leg.id)) continue;
+      animatedFlightIdsRef.current.add(leg.id);
+      const pts = bezierArc(leg.from, leg.to, leg.sign);
+      if (!fitted) {
+        fitted = true;
+        const fitLine = new AMap.Polyline({ path: pts, strokeOpacity: 0 });
+        map.add(fitLine);
+        map.setFitView([fitLine], false, [90, 90, 90, 90]);
+        map.remove(fitLine);
+      }
+      animateArc(pts);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, collapsed, mode, flightsConfirmed, outbound?.id, returnFlight?.id, origin, primaryDestination]);
+
+  // 卸载时取消所有动画帧。
+  useEffect(() => {
+    return () => {
+      rafIdsRef.current.forEach((id) => cancelAnimationFrame(id));
+      rafIdsRef.current = [];
+    };
+  }, []);
+
+  function animateArc(pts: [number, number][]) {
+    const AMap = amapRef.current;
+    const map = mapRef.current;
+    if (!AMap || !map || pts.length < 2) return;
+
+    const line = new AMap.Polyline({
+      path: [pts[0]],
+      strokeColor: "#c96442",
+      strokeWeight: 3,
+      strokeOpacity: 0.9,
+      lineJoin: "round",
+      lineCap: "round",
+    });
+    map.add(line);
+    flightOverlaysRef.current.push(line);
+
+    const plane = new AMap.Marker({
+      position: pts[0],
+      content: planeContent(bearingDeg(pts[0], pts[1])),
+      // 向上偏移，让飞机悬浮在航线上方而非压线。
+      offset: new AMap.Pixel(0, -14),
+      zIndex: 200,
+    });
+    map.add(plane);
+    flightOverlaysRef.current.push(plane);
+
+    const segments = pts.length - 1;
+    const duration = 1500;
+    const start = performance.now();
+
+    const tick = (now: number) => {
+      if (!mapRef.current) return;
+      const p = Math.min(1, (now - start) / duration);
+      const k = Math.max(1, Math.floor(p * segments));
+      line.setPath(pts.slice(0, k + 1));
+      plane.setPosition(pts[k]);
+      plane.setContent(planeContent(bearingDeg(pts[k - 1], pts[k])));
+      if (p < 1) {
+        rafIdsRef.current.push(requestAnimationFrame(tick));
+        return;
+      }
+      // 到达后：飞机消失，改在航线上方（弧顶）静态显示。
+      map.remove(plane);
+      const apexIndex = Math.floor(pts.length / 2);
+      const apex = pts[apexIndex];
+      const dir = bearingDeg(pts[apexIndex - 1], pts[apexIndex + 1] ?? apex);
+      const stat = new AMap.Marker({
+        position: apex,
+        content: planeContent(dir),
+        offset: new AMap.Pixel(0, -22),
+        zIndex: 200,
+      });
+      map.add(stat);
+      flightOverlaysRef.current.push(stat);
+    };
+    rafIdsRef.current.push(requestAnimationFrame(tick));
+  }
+
+  // 确认机票后放大到到达地（行程尚空时）。
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    if (mode === "traffic_first" && flightsConfirmed) {
+      const city = findCity(primaryDestination);
+      if (city) map.setZoomAndCenter(11, [city.lng, city.lat]);
+    }
+  }, [ready, flightsConfirmed, mode, primaryDestination]);
+
+  // 行程打点 + 按需路径渲染。
+  useEffect(() => {
+    const map = mapRef.current;
+    const AMap = amapRef.current;
+    if (!map || !AMap || !ready) return;
+    if (collapsed) return; // 折叠期间不再根据行程表更新
+    if (mode === "traffic_first" && !flightsConfirmed) return;
+
+    const seq = ++drawSeqRef.current;
+    map.remove(overlaysRef.current);
+    overlaysRef.current = [];
+
+    const stops = filledStops(days);
+    for (const stop of stops) {
+      const marker = new AMap.Marker({
+        position: [stop.poi.lng, stop.poi.lat],
+        content: pinContent(stop.order, stop.poi.name),
+        offset: new AMap.Pixel(0, 0),
+      });
+      overlaysRef.current.push(marker);
+    }
+    if (overlaysRef.current.length > 0) {
+      map.add(overlaysRef.current);
+      map.setFitView(overlaysRef.current, false, [80, 80, 80, 80]);
+    }
+
+    // 按天相邻 filled 段：仅当 showPath 时渲染路径并标注方式+时长。
+    for (const day of days) {
+      const dayStops = day.slots.filter(
+        (s) => s.poi && s.poi.lng != null && s.poi.lat != null,
+      );
+      for (let i = 0; i < dayStops.length - 1; i++) {
+        const from = dayStops[i];
+        const to = dayStops[i + 1];
+        const t = transits[transitKey(day.dayIndex, from.id)];
+        if (!t || !t.showPath) continue;
+        const fromPt: [number, number] = [from.poi!.lng!, from.poi!.lat!];
+        const toPt: [number, number] = [to.poi!.lng!, to.poi!.lat!];
+        drawSegment(seq, day.dayIndex, from.id, t.mode, fromPt, toPt);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, collapsed, reopenNonce, days, transits, mode, flightsConfirmed]);
+
+  function drawSegment(
+    seq: number,
+    dayIndex: number,
+    fromSlotId: string,
+    transitMode: TransitMode,
+    from: [number, number],
+    to: [number, number],
+  ) {
+    const AMap = amapRef.current;
+    const map = mapRef.current;
+    if (!AMap || !map) return;
+    const sig = `${from[0]},${from[1]}->${to[0]},${to[1]}:${transitMode}`;
+    const cached = pathCacheRef.current.get(sig);
+    if (cached) {
+      paintSegment(transitMode, cached.path, from, to);
+      return;
+    }
+
+    const onResult = (
+      path: [number, number][],
+      duration: number | null,
+      distance: number | null,
+    ) => {
+      pathCacheRef.current.set(sig, { path, duration, distance });
+      if (seq !== drawSeqRef.current) return;
+      paintSegment(transitMode, path, from, to);
+      setTransitResult(dayIndex, fromSlotId, {
+        durationSeconds: duration,
+        distanceMeters: distance,
+      });
+    };
+
+    try {
+      if (transitMode === "walking") {
+        const walking = new AMap.Walking();
+        walking.search(from, to, (status: string, result: AMapAny) => {
+          if (status === "complete" && result?.routes?.length) {
+            const route = result.routes[0];
+            const path: [number, number][] = [];
+            for (const step of route.steps) path.push(...step.path);
+            onResult(path, route.time ?? null, route.distance ?? null);
+          } else {
+            onResult([from, to], null, null);
+          }
+        });
+      } else if (transitMode === "transit") {
+        const transfer = new AMap.Transfer({ city: primaryDestination || "全国" });
+        transfer.search(from, to, (_status: string, result: AMapAny) => {
+          const plan = result?.plans?.[0];
+          // 地铁/公交路径在地下，用直连虚线 + 真实换乘时长。
+          onResult([from, to], plan?.time ?? null, plan?.distance ?? null);
+        });
+      } else {
+        const driving = new AMap.Driving({ policy: AMap.DrivingPolicy.LEAST_TIME, hideMarkers: true });
+        driving.search(from, to, (status: string, result: AMapAny) => {
+          if (status === "complete" && result?.routes?.length) {
+            const route = result.routes[0];
+            const path: [number, number][] = [];
+            for (const step of route.steps) path.push(...step.path);
+            onResult(path, route.time ?? null, route.distance ?? null);
+          } else {
+            onResult([from, to], null, null);
+          }
+        });
+      }
+    } catch {
+      onResult([from, to], null, null);
+    }
+  }
+
+  function paintSegment(
+    transitMode: TransitMode,
+    path: [number, number][],
+    from: [number, number],
+    to: [number, number],
+  ) {
+    const AMap = amapRef.current;
+    const map = mapRef.current;
+    if (!AMap || !map) return;
+    const color = MODE_COLOR[transitMode];
+    const isTransit = transitMode === "transit";
+    const line = new AMap.Polyline({
+      path: path.length >= 2 ? path : [from, to],
+      strokeColor: color,
+      strokeWeight: isTransit ? 4 : 5,
+      strokeOpacity: 0.9,
+      // 公共交通：圆头等距小圆点，替代难看的大虚线。
+      strokeStyle: isTransit ? "dashed" : "solid",
+      strokeDasharray: isTransit ? [2, 12] : undefined,
+      lineJoin: "round",
+      lineCap: "round",
+      showDir: !isTransit,
+    });
+    map.add(line);
+    overlaysRef.current.push(line);
+
+    const mid: [number, number] = [
+      (from[0] + to[0]) / 2,
+      (from[1] + to[1]) / 2,
+    ];
+    const label = new AMap.Text({
+      text: MODE_LABEL[transitMode],
+      position: mid,
+      offset: new AMap.Pixel(0, -12),
+      style: {
+        background: "#fffdf9",
+        border: `1px solid ${color}`,
+        color,
+        "border-radius": "999px",
+        padding: "2px 8px",
+        "font-size": "12px",
+        "font-weight": "600",
+      },
+    });
+    map.add(label);
+    overlaysRef.current.push(label);
+  }
+
+  if (loadError) {
+    const stops = filledStops(days);
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 bg-gradient-to-br from-ivory to-sand p-8 text-center">
+        <MapPinned className="h-8 w-8 text-clay" />
+        <div className="text-sm font-semibold text-warning">{loadError}</div>
+        {stops.length === 0 ? (
+          <p className="text-sm text-stone">添加地点后这里会显示坐标列表。</p>
+        ) : (
+          <ul className="w-full max-w-sm space-y-1 text-left text-sm text-stone">
+            {stops.map((s) => (
+              <li key={s.slotId}>
+                {s.order}. {s.poi.name}（{s.poi.lng.toFixed(3)}, {s.poi.lat.toFixed(3)}）
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  }
+
+  return <div ref={containerRef} className="h-full w-full" />;
+}

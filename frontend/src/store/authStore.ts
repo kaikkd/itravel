@@ -14,6 +14,10 @@ interface AuthUser {
   email: string;
 }
 
+// 默认管理员（无登录页方案）：与后端 auth.ensure_default_admin 一致。
+const DEFAULT_ADMIN_EMAIL = "admin@123.com";
+const DEFAULT_ADMIN_PASSWORD = "12345678";
+
 interface AuthState {
   user: AuthUser | null;
   loading: boolean;
@@ -21,9 +25,10 @@ interface AuthState {
   register: (email: string, password: string) => Promise<void>;
   logout: () => void;
   loadMe: () => Promise<void>;
+  bootstrap: () => Promise<void>;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   loading: true,
   login: async (email, password) => {
@@ -43,5 +48,21 @@ export const useAuthStore = create<AuthState>((set) => ({
   loadMe: async () => {
     const me = await getMe();
     set({ user: me, loading: false });
+  },
+  // 无登录页：先尝试恢复会话，失败则用默认管理员静默登录。
+  bootstrap: async () => {
+    set({ loading: true });
+    try {
+      const me = await getMe();
+      if (me) {
+        set({ user: me, loading: false });
+        return;
+      }
+      await get().login(DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD);
+    } catch {
+      // 后端不可用时也不阻塞页面，仅保持未登录态。
+    } finally {
+      set({ loading: false });
+    }
   },
 }));
