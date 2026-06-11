@@ -120,8 +120,11 @@ export interface Flight {
   flightNo: string; // 航班号 或 车次（G/D）
   from: Airport;
   to: Airport;
+  date: string; // 出发日期 ISO（YYYY-MM-DD）
+  dateLabel: string; // 展示用日期（如「6月18日 周三」）
   departTime: string;
   arriveTime: string;
+  durationMinutes: number; // 行程时长（分钟），用于汇总计算
   duration: string;
   price: number;
   baggage: string; // 飞机：行李额；高铁：座席类型

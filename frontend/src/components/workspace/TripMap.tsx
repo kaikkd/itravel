@@ -68,91 +68,13 @@ function dimPinContent(): string {
     </div>`;
 }
 
-// 二次贝塞尔上拱弧线：sign 控制偏移方向（去/返程分开）。
-function bezierArc(
-  from: [number, number],
-  to: [number, number],
-  sign: number,
-): [number, number][] {
-  const [x1, y1] = from;
-  const [x2, y2] = to;
-  const mx = (x1 + x2) / 2;
-  const my = (y1 + y2) / 2;
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const dist = Math.hypot(dx, dy) || 1;
-  const nx = -dy / dist;
-  const ny = dx / dist;
-  const lift = dist * 0.26 * sign;
-  const cx = mx + nx * lift;
-  const cy = my + ny * lift;
-  const N = 64;
-  const pts: [number, number][] = [];
-  for (let i = 0; i <= N; i++) {
-    const t = i / N;
-    const a = 1 - t;
-    pts.push([
-      a * a * x1 + 2 * a * t * cx + t * t * x2,
-      a * a * y1 + 2 * a * t * cy + t * t * y2,
-    ]);
-  }
-  return pts;
-}
-
-function bearingDeg(a: [number, number], b: [number, number]): number {
-  return (-Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI;
-}
-
-// 朝左行进时（|angle|>90°）垂直翻转，避免图标底朝天。
-function uprightTransform(angleDeg: number): string {
-  const flip = Math.abs(angleDeg) > 90 ? " scaleY(-1)" : "";
-  return `rotate(${angleDeg}deg)${flip}`;
-}
-
-function planeContent(angleDeg: number): string {
-  return `
-    <div style="transform:translate(-50%,-50%) ${uprightTransform(angleDeg)};filter:drop-shadow(0 3px 6px rgba(60,45,30,.35));">
-      <svg width="30" height="30" viewBox="0 0 32 32">
-        <path d="M30 16 C30 17 29 17.6 27.6 17.8 L20 19 L15.5 27 C15.2 27.6 14.7 28 14 28 L12.4 28 L14.2 19.4 L7.6 20.4 L5.6 23.2 C5.4 23.5 5.1 23.7 4.7 23.7 L3.4 23.7 L4.6 19.2 L3.4 16 L4.6 12.8 L3.4 8.3 L4.7 8.3 C5.1 8.3 5.4 8.5 5.6 8.8 L7.6 11.6 L14.2 12.6 L12.4 4 L14 4 C14.7 4 15.2 4.4 15.5 5 L20 13 L27.6 14.2 C29 14.4 30 15 30 16 Z"
-          fill="#c96442" stroke="#fffdf9" stroke-width="0.8" stroke-linejoin="round"/>
-      </svg>
-    </div>`;
-}
-
-// 高铁车头（侧视流线型），按行进方向旋转；朝左时垂直翻转保持正立。
-function trainContent(angleDeg: number): string {
-  return `
-    <div style="transform:translate(-50%,-50%) ${uprightTransform(angleDeg)};filter:drop-shadow(0 3px 6px rgba(60,45,30,.35));">
-      <svg width="34" height="20" viewBox="0 0 34 20">
-        <path d="M2 13 L2 8 C2 7 2.6 6.4 3.6 6.2 L18 4 C24 3.2 30 6 33 10 C33.4 10.5 33.4 11.5 33 12 L32 13 Z"
-          fill="#3f6f8f" stroke="#fffdf9" stroke-width="0.8" stroke-linejoin="round"/>
-        <rect x="6" y="7.5" width="3" height="2.4" rx="0.5" fill="#fffdf9"/>
-        <rect x="10.5" y="7.2" width="3" height="2.4" rx="0.5" fill="#fffdf9"/>
-        <rect x="15" y="6.9" width="3" height="2.4" rx="0.5" fill="#fffdf9"/>
-        <circle cx="9" cy="14.5" r="1.4" fill="#2a2622"/>
-        <circle cx="22" cy="14.5" r="1.4" fill="#2a2622"/>
-      </svg>
-    </div>`;
-}
-
-function vehicleContent(kind: string, angleDeg: number): string {
-  return kind === "train" ? trainContent(angleDeg) : planeContent(angleDeg);
-}
-
-// 平滑缓动：两端慢、中间快，飞行/行进更自然。
-function easeInOut(t: number): number {
-  return t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
-}
 
 export default function TripMap({ collapsed = false }: { collapsed?: boolean }) {
   const itinerary = useItineraryStore((s) => s.itinerary);
   const selectedDayIndex = useItineraryStore((s) => s.selectedDayIndex);
   const applyTransitResult = useItineraryStore((s) => s.applyTransitResult);
-  const outbound = useFlightStore((s) => s.outbound);
-  const returnFlight = useFlightStore((s) => s.returnFlight);
   const flightsConfirmed = useFlightStore((s) => s.flightsConfirmed);
   const mode = usePlanFlowStore((s) => s.mode);
-  const origin = usePlanFlowStore((s) => s.origin);
   const primaryDestination = usePlanFlowStore((s) => s.primaryDestination)();
 
   const days = itinerary?.days ?? [];
@@ -166,8 +88,6 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     Map<string, { path: [number, number][]; duration: number | null; distance: number | null }>
   >(new Map());
   const drawSeqRef = useRef(0);
-  const flightOverlaysRef = useRef<AMapAny[]>([]);
-  const rafIdsRef = useRef<number[]>([]);
   const [ready, setReady] = useState(false);
   const [reopenNonce, setReopenNonce] = useState(0);
   const [loadError, setLoadError] = useState("");
@@ -219,129 +139,16 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     };
   }, []);
 
-  // 大交通曲线（交通优先、确认前）：不再做飞行动画，直接 0.5s 淡入最终曲线 + 顶点图标。
-  useEffect(() => {
-    const map = mapRef.current;
-    const AMap = amapRef.current;
-    if (!map || !AMap || !ready || collapsed) return;
-
-    // 每次切票/换出行方式都先清空旧曲线，避免残留（修：飞机换高铁后旧轨迹不消失）。
-    if (flightOverlaysRef.current.length) {
-      map.remove(flightOverlaysRef.current);
-      flightOverlaysRef.current = [];
-    }
-    rafIdsRef.current.forEach((id) => cancelAnimationFrame(id));
-    rafIdsRef.current = [];
-
-    if (mode !== "traffic_first" || flightsConfirmed) return;
-
-    const fromAir = findCity(origin)?.airport ?? outbound?.from;
-    const toAir = findCity(primaryDestination)?.airport ?? outbound?.to;
-    if (!fromAir || !toAir) return;
-
-    type Leg = {
-      kind: string;
-      from: [number, number];
-      to: [number, number];
-      sign: number;
-    };
-    const legs: Leg[] = [];
-    if (outbound) {
-      legs.push({
-        kind: outbound.kind,
-        from: [fromAir.lng, fromAir.lat],
-        to: [toAir.lng, toAir.lat],
-        sign: 1,
-      });
-    }
-    if (returnFlight) {
-      legs.push({
-        kind: returnFlight.kind,
-        from: [toAir.lng, toAir.lat],
-        to: [fromAir.lng, fromAir.lat],
-        sign: 1,
-      });
-    }
-
-    const allPts: [number, number][] = [];
-    for (const leg of legs) {
-      // 高铁走近乎贴地的平缓弧，飞机走明显上拱弧。
-      const lift = leg.kind === "train" ? 0.06 : 1;
-      const pts = bezierArc(leg.from, leg.to, leg.sign * lift);
-      allPts.push(...pts);
-      drawLeg(pts, leg.kind);
-    }
-    if (allPts.length) {
-      const fitLine = new AMap.Polyline({ path: allPts, strokeOpacity: 0 });
-      map.add(fitLine);
-      map.setFitView([fitLine], false, [90, 90, 90, 90]);
-      map.remove(fitLine);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, collapsed, mode, flightsConfirmed, outbound?.id, returnFlight?.id, origin, primaryDestination]);
-
-  useEffect(() => {
-    return () => {
-      rafIdsRef.current.forEach((id) => cancelAnimationFrame(id));
-      rafIdsRef.current = [];
-    };
-  }, []);
-
-  // 0.5s 淡入：最终整条曲线 + 顶点处的图标，无逐帧飞行。
-  function drawLeg(pts: [number, number][], kind = "flight") {
-    const AMap = amapRef.current;
-    const map = mapRef.current;
-    if (!AMap || !map || pts.length < 2) return;
-
-    const color = kind === "train" ? "#3f6f8f" : "#c96442";
-    const apexIndex = Math.floor(pts.length / 2);
-    const apex = pts[apexIndex];
-    const dir = bearingDeg(pts[apexIndex - 1], pts[apexIndex + 1] ?? apex);
-
-    const line = new AMap.Polyline({
-      path: pts,
-      strokeColor: color,
-      strokeWeight: kind === "train" ? 4 : 3,
-      strokeOpacity: 0,
-      strokeStyle: kind === "train" ? "dashed" : "solid",
-      strokeDasharray: kind === "train" ? [6, 6] : undefined,
-      lineJoin: "round",
-      lineCap: "round",
-    });
-    map.add(line);
-    flightOverlaysRef.current.push(line);
-
-    const icon = new AMap.Marker({
-      position: apex,
-      content: vehicleContent(kind, dir),
-      offset: new AMap.Pixel(0, kind === "train" ? -16 : -22),
-      opacity: 0,
-      zIndex: 200,
-    });
-    map.add(icon);
-    flightOverlaysRef.current.push(icon);
-
-    const duration = 500;
-    const start = performance.now();
-    const tick = (now: number) => {
-      if (!mapRef.current) return;
-      const p = easeInOut(Math.min(1, (now - start) / duration));
-      line.setOptions({ strokeOpacity: 0.95 * p });
-      icon.setOpacity?.(p);
-      if (p < 1) rafIdsRef.current.push(requestAnimationFrame(tick));
-    };
-    rafIdsRef.current.push(requestAnimationFrame(tick));
-  }
-
-  // 确认机票后放大到到达地（行程尚空时）。
+  // 进入地图（确认大交通后/路线优先）时，若行程尚空先定位到目的城市。
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
-    if (mode === "traffic_first" && flightsConfirmed) {
-      const city = findCity(primaryDestination);
-      if (city) map.setZoomAndCenter(11, [city.lng, city.lat]);
+    const city = findCity(primaryDestination);
+    if (city && days.every((d) => d.stops.length === 0)) {
+      map.setZoomAndCenter(11, [city.lng, city.lat]);
     }
-  }, [ready, flightsConfirmed, mode, primaryDestination]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, primaryDestination]);
 
   // 行程打点 + 路径渲染：非激活天弱化并聚合，仅激活天高亮打点 + 画路线（#3）。
   useEffect(() => {

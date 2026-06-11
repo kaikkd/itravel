@@ -485,3 +485,56 @@
 .card-pop {
   animation: card-pop 0.3s ease-out;
 }
+
+/* 行程概览卡：分块错峰浮入 */
+@keyframes summary-rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.summary-rise {
+  animation: summary-rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--i, 0) * 90ms);
+}
+
+/* 概览卡顶部柔光带缓慢流动 */
+@keyframes sheen-move {
+  0% {
+    background-position: -120% 0;
+  }
+  100% {
+    background-position: 220% 0;
+  }
+}
+
+.sheen {
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    rgba(255, 255, 255, 0.5) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  animation: sheen-move 3.6s ease-in-out infinite;
+}
+
+/* 出行方式图标轻微浮动 */
+@keyframes leg-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+.leg-float {
+  animation: leg-float 3s ease-in-out infinite;
+}

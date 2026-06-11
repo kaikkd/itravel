@@ -5,6 +5,7 @@ import ChatDock from "./ChatDock";
 import ScheduleColumn from "./ScheduleColumn";
 import FlightBoard from "./FlightBoard";
 import TripMap from "./TripMap";
+import TripSummaryCard from "./TripSummaryCard";
 import { usePlanFlowStore } from "../../store/planFlowStore";
 import { useFlightStore } from "../../store/flightStore";
 import { useItineraryStore } from "../../store/itineraryStore";
@@ -22,19 +23,17 @@ export default function WorkspaceLayout() {
   const chatActive = mode === "route_first" || flightsConfirmed;
 
   const [showIntro, setShowIntro] = useState(false);
-  // 交通优先：进入即展示地图（飞行/高铁动画在地图上）。
-  // 路线优先：先不展示地图，选到地点后再展开（#6）。
-  const [mapCollapsed, setMapCollapsed] = useState(mode !== "traffic_first");
+  // 地图只服务于行程规划阶段（大交通阶段右侧是行程概览卡，不再有地图）。
+  // 进入行程规划先不展示地图，选到地点后再展开（#6）。
+  const [mapCollapsed, setMapCollapsed] = useState(true);
   const userToggledMap = useRef(false);
   const introShownRef = useRef(false);
 
-  // 触发展开地图的条件：交通优先（看大交通动画）或已有行程地点。用户手动收起后不再自动覆盖。
+  // 有了行程地点自动展开地图一次；用户手动收起后不再自动覆盖。
   useEffect(() => {
     if (userToggledMap.current) return;
-    if (mode === "traffic_first" || hasItinerary) {
-      setMapCollapsed(false);
-    }
-  }, [mode, hasItinerary, flightsConfirmed]);
+    if (hasItinerary) setMapCollapsed(false);
+  }, [hasItinerary]);
 
   // 进入聊天阶段时一次性浮现中心提示，约 2s 后吹散并触发对话框边缘闪烁。
   useEffect(() => {
@@ -64,17 +63,16 @@ export default function WorkspaceLayout() {
       <TopNav />
 
       <main className="relative flex min-h-0 flex-1 items-stretch gap-3 p-4">
-        {/* 左列：行程表卡 + 独立对话卡（上下分离，不再粘连）#1
-            非折叠时用 flex-basis 42% + flex-1 收缩，与右侧 58% 对称、不溢出（#7） */}
+        {/* 左列：选票栏 / 行程表 + 独立对话卡 */}
         <section
           className={`flex min-h-0 min-w-0 flex-col gap-3 ${
-            mapCollapsed ? "mx-auto w-full max-w-3xl" : ""
+            !showFlights && mapCollapsed ? "mx-auto w-full max-w-3xl" : ""
           }`}
           style={{
-            // 选大交通：选票栏 70%（固定）；行程规划：左列填充剩余（地图固定 45%）。
-            flexBasis: mapCollapsed ? undefined : showFlights ? "70%" : "0%",
-            flexGrow: mapCollapsed || !showFlights ? 1 : 0,
-            flexShrink: mapCollapsed ? 1 : 0,
+            // 大交通：选票栏 70%；行程规划：地图展开时左列填充剩余、折叠时居中。
+            flexBasis: showFlights ? "70%" : mapCollapsed ? undefined : "0%",
+            flexGrow: showFlights ? 0 : 1,
+            flexShrink: showFlights ? 0 : 1,
             transition: `flex-basis 500ms ${ease}`,
           }}
         >
@@ -96,8 +94,8 @@ export default function WorkspaceLayout() {
           )}
         </section>
 
-        {/* 折叠按钮：行程表与地图之间 */}
-        {!mapCollapsed && (
+        {/* 折叠按钮：仅行程规划阶段、地图展开时显示 */}
+        {!showFlights && !mapCollapsed && (
           <button
             onClick={collapseMap}
             title="收起地图"
@@ -108,20 +106,29 @@ export default function WorkspaceLayout() {
           </button>
         )}
 
-        {/* 右列：标准地图（延伸到底部）。大交通时填充左列以外；行程规划时固定 45%。折叠时收起。 */}
-        <section
-          className="relative min-h-0 overflow-hidden rounded-3xl border border-line bg-surface shadow-soft"
-          style={{
-            flexBasis: mapCollapsed ? "0%" : showFlights ? "0%" : "45%",
-            flexGrow: mapCollapsed ? 0 : showFlights ? 1 : 0,
-            flexShrink: mapCollapsed || showFlights ? 1 : 0,
-            opacity: mapCollapsed ? 0 : 1,
-            pointerEvents: mapCollapsed ? "none" : undefined,
-            transition: `flex-basis 500ms ${ease}, flex-grow 500ms ${ease}, opacity 400ms ${ease}`,
-          }}
-        >
-          <TripMap collapsed={mapCollapsed} />
-        </section>
+        {/* 右列：大交通阶段=行程概览卡（30%，常显）；行程规划阶段=地图（45%，可折叠） */}
+        {showFlights ? (
+          <section
+            className="summary-rise relative min-h-0 overflow-hidden rounded-3xl border border-line bg-surface shadow-soft"
+            style={{ flexBasis: "30%", flexGrow: 1, flexShrink: 1 }}
+          >
+            <TripSummaryCard />
+          </section>
+        ) : (
+          <section
+            className="relative min-h-0 overflow-hidden rounded-3xl border border-line bg-surface shadow-soft"
+            style={{
+              flexBasis: mapCollapsed ? "0%" : "45%",
+              flexGrow: 0,
+              flexShrink: 1,
+              opacity: mapCollapsed ? 0 : 1,
+              pointerEvents: mapCollapsed ? "none" : undefined,
+              transition: `flex-basis 500ms ${ease}, opacity 400ms ${ease}`,
+            }}
+          >
+            <TripMap collapsed={mapCollapsed} />
+          </section>
+        )}
 
         {/* 中心浮现提示（一次性，约 2s 后浮尘吹散） */}
         {showIntro && (
@@ -142,8 +149,8 @@ export default function WorkspaceLayout() {
         )}
       </main>
 
-      {/* 折叠后右下角浮标：重新展开地图。有行程或交通优先（看大交通动画）时可用。 */}
-      {mapCollapsed && (hasItinerary || mode === "traffic_first") && (
+      {/* 折叠后右下角浮标：重新展开地图。仅行程规划阶段、已有行程时可用。 */}
+      {!showFlights && mapCollapsed && hasItinerary && (
         <button
           onClick={expandMap}
           title="展开地图"

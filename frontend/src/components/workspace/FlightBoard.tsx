@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import {
+  CalendarDays,
   Check,
   Luggage,
   Plane,
@@ -10,6 +11,7 @@ import {
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
+  defaultDepartDate,
   outboundFlights,
   outboundTrains,
   returnFlights,
@@ -76,6 +78,10 @@ function TicketRow({
         </div>
         <div className="text-lg font-bold text-clay">¥{ticket.price}</div>
       </div>
+      <div className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-sand px-2 py-0.5 text-xs font-semibold text-stone">
+        <CalendarDays className="h-3 w-3" />
+        {ticket.dateLabel}
+      </div>
       <div className="mt-3 flex items-center gap-3 text-sm text-ink">
         <span className="font-semibold">{ticket.departTime}</span>
         <span className="flex flex-1 items-center">
@@ -114,6 +120,7 @@ function TicketRow({
 export default function FlightBoard() {
   const origin = usePlanFlowStore((s) => s.origin);
   const primaryDestination = usePlanFlowStore((s) => s.primaryDestination)();
+  const dayCount = usePlanFlowStore((s) => s.dayCount);
   const outboundMode = useFlightStore((s) => s.outboundMode);
   const returnMode = useFlightStore((s) => s.returnMode);
   const outbound = useFlightStore((s) => s.outbound);
@@ -124,19 +131,27 @@ export default function FlightBoard() {
   const setReturnFlight = useFlightStore((s) => s.setReturnFlight);
   const confirmFlights = useFlightStore((s) => s.confirmFlights);
 
+  // 出发日默认今天+7；返程日 = 出发日 + (天数-1)。
+  const departDate = useMemo(() => defaultDepartDate(), []);
+  const returnDate = useMemo(() => {
+    const d = new Date(departDate);
+    d.setDate(d.getDate() + Math.max(0, dayCount - 1));
+    return d;
+  }, [departDate, dayCount]);
+
   const outList = useMemo(
     () =>
       outboundMode === "flight"
-        ? outboundFlights(origin, primaryDestination)
-        : outboundTrains(origin, primaryDestination),
-    [origin, primaryDestination, outboundMode],
+        ? outboundFlights(origin, primaryDestination, departDate)
+        : outboundTrains(origin, primaryDestination, departDate),
+    [origin, primaryDestination, outboundMode, departDate],
   );
   const retList = useMemo(
     () =>
       returnMode === "flight"
-        ? returnFlights(origin, primaryDestination)
-        : returnTrains(origin, primaryDestination),
-    [origin, primaryDestination, returnMode],
+        ? returnFlights(origin, primaryDestination, returnDate)
+        : returnTrains(origin, primaryDestination, returnDate),
+    [origin, primaryDestination, returnMode, returnDate],
   );
 
   const canConfirm = Boolean(outbound && returnFlight);
