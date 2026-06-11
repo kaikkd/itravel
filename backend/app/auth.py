@@ -1,6 +1,6 @@
 import re
 import time
-from collections import defaultdict, deque
+from collections import deque
 from datetime import datetime, timedelta, timezone
 
 from argon2 import PasswordHasher
@@ -24,9 +24,32 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _MIN_PASSWORD = 8
 
 # 登录失败限频：每邮箱 5 次 / 60s（PRD §5.4.2 防暴力破解）
+#
+# 实现要点：
+# 1) key 统一规范化（trim + lower），避免大小写/空白差异绕过限频；
+# 2) 失败记录窗口过期后立即驱逐，避免 _fail_log 随陌生邮箱无限膨胀（OOM/DoS 面）；
+# 3) 设置全局键数硬上限 _MAX_TRACKED_EMAILS，触顶时整体扫描清理过期键，
+#    必要时按 FIFO 丢弃最老一条记录，保证有界内存。
 _MAX_FAILS = 5
 _WINDOW = 60.0
-_fail_log: dict[str, deque] = defaultdict(deque)
+_MAX_TRACKED_EMAILS = 10_000
+_fail_log: dict[str, deque] = {}
+
+
+def _normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def _evict_expired(now: float) -> None:
+    """清理所有窗口外的失败记录条目；已无记录的 key 直接删除。"""
+    expired_keys: list[str] = []
+    for key, log in _fail_log.items():
+        while log and now - log[0] > _WINDOW:
+            log.popleft()
+        if not log:
+            expired_keys.append(key)
+    for key in expired_keys:
+        _fail_log.pop(key, None)
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -69,18 +92,42 @@ def decode_token(token: str) -> int | None:
 def rate_limited(email: str) -> bool:
     """该邮箱在窗口内失败次数是否已达上限。"""
     now = time.monotonic()
-    log = _fail_log[email]
+    key = _normalize_email(email)
+    log = _fail_log.get(key)
+    if log is None:
+        return False
     while log and now - log[0] > _WINDOW:
         log.popleft()
+    if not log:
+        # 窗口外条目已全部驱逐，立即删除空 key，避免内存泄漏。
+        _fail_log.pop(key, None)
+        return False
     return len(log) >= _MAX_FAILS
 
 
 def record_failure(email: str) -> None:
-    _fail_log[email].append(time.monotonic())
+    now = time.monotonic()
+    key = _normalize_email(email)
+    log = _fail_log.get(key)
+    if log is None:
+        # 接近上限时主动做一次全局过期清理，避免 _fail_log 无界增长。
+        if len(_fail_log) >= _MAX_TRACKED_EMAILS:
+            _evict_expired(now)
+        # 清理后若仍触顶（极端攻击场景：短时间内大量不同邮箱失败），
+        # 丢弃最早创建的一条记录，保证字典严格有界。
+        if len(_fail_log) >= _MAX_TRACKED_EMAILS:
+            try:
+                oldest_key = next(iter(_fail_log))
+                _fail_log.pop(oldest_key, None)
+            except StopIteration:
+                pass
+        log = deque()
+        _fail_log[key] = log
+    log.append(now)
 
 
 def reset_failures(email: str) -> None:
-    _fail_log.pop(email, None)
+    _fail_log.pop(_normalize_email(email), None)
 
 
 def get_current_user(
