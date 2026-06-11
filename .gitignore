@@ -22,5 +22,8 @@ dist/
 .claude/
 .cursor/
 
+# 下载的第三方 skill（不入库）
+.taste-skill/
+
 # 编辑器 / 系统
 .DS_Store

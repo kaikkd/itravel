@@ -1,0 +1,250 @@
+/* IntroGate 示范：taste-skill 方向（自包含，作用域仅 .tg-*，不影响其它页）。
+ * 方向：暗色编辑式 hero + 单一高饱和强调色 + 非对称排版 + 分层深度 + 交错入场动效。
+ * Design Read：消费向旅行规划入口落地页，premium-consumer/agency 偏向；dials ≈ VARIANCE 9 / MOTION 6 / DENSITY 3。 */
+
+.tg-root {
+  /* 绑定全局主题 token：浅色默认，.dark 自动翻转 */
+  --tg-bg: var(--bg);
+  --tg-bg-2: var(--bg-elev);
+  --tg-paper: var(--fg);
+  --tg-muted: var(--fg-muted);
+  --tg-line: var(--line);
+  --tg-accent: var(--accent);
+  --tg-accent-soft: var(--accent-soft);
+
+  position: relative;
+  min-height: 100dvh;
+  width: 100%;
+  overflow: hidden;
+  background:
+    radial-gradient(
+      120% 90% at 88% -8%,
+      color-mix(in srgb, var(--tg-accent) 16%, transparent),
+      transparent 55%
+    ),
+    radial-gradient(
+      80% 70% at -5% 110%,
+      color-mix(in srgb, var(--color-moss) 12%, transparent),
+      transparent 55%
+    ),
+    linear-gradient(180deg, var(--tg-bg-2), var(--tg-bg));
+  color: var(--tg-paper);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: clamp(24px, 5vw, 72px);
+  transition:
+    background-color 0.25s ease,
+    color 0.25s ease;
+}
+
+/* 颗粒噪点，打破数字平整感 */
+.tg-grain {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.tg-shell {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+.tg-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--tg-muted);
+}
+
+.tg-eyebrow .tg-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--tg-accent);
+  box-shadow: 0 0 14px 2px var(--tg-accent);
+}
+
+/* 标题：Latin 用 Space Grotesk，CJK 回退 PingFang/雅黑；大字号、紧字距 */
+.tg-title {
+  margin: 18px 0 0;
+  max-width: 24ch;
+  font-family: "Space Grotesk", system-ui, "PingFang SC", "Microsoft YaHei",
+    sans-serif;
+  font-weight: 700;
+  font-size: clamp(40px, 7vw, 96px);
+  line-height: 1;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+/* Space Grotesk 无真斜体，强调改为高亮色（不用合成斜体，避免发虚） */
+.tg-title .tg-em {
+  color: var(--tg-accent);
+}
+
+.tg-sub {
+  margin: 22px 0 0;
+  max-width: 46ch;
+  font-size: clamp(15px, 1.5vw, 18px);
+  line-height: 1.6;
+  color: var(--tg-muted);
+}
+
+/* 非对称两栏：左栏更宽，右栏下沉错位 */
+.tg-grid {
+  margin-top: clamp(36px, 6vw, 72px);
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+}
+
+@media (min-width: 860px) {
+  .tg-grid {
+    grid-template-columns: 1.15fr 0.85fr;
+    gap: 24px;
+    align-items: start;
+  }
+}
+
+.tg-card {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: clamp(22px, 2.6vw, 34px);
+  border: 1px solid var(--tg-line);
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--tg-bg-2) 70%, transparent);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+  /* transform 交给 motion（whileHover/whileTap），此处只过渡颜色 */
+  transition:
+    border-color 0.3s ease,
+    background 0.3s ease;
+}
+
+.tg-card:hover {
+  border-color: color-mix(in srgb, var(--tg-accent) 50%, transparent);
+  background: color-mix(in srgb, var(--tg-accent) 10%, var(--tg-bg-2));
+}
+
+/* 巨大序号水印，制造分层深度 */
+.tg-card-num {
+  position: absolute;
+  top: -14px;
+  right: 6px;
+  font-family: "Space Grotesk", sans-serif;
+  font-weight: 700;
+  font-size: 132px;
+  line-height: 1;
+  color: color-mix(in srgb, var(--tg-paper) 8%, transparent);
+  pointer-events: none;
+}
+
+.tg-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  background: var(--tg-accent-soft);
+  color: var(--tg-accent);
+}
+
+.tg-card-title {
+  font-family: "Space Grotesk", system-ui, "PingFang SC", "Microsoft YaHei",
+    sans-serif;
+  font-weight: 600;
+  font-size: clamp(20px, 2.1vw, 26px);
+  letter-spacing: -0.01em;
+}
+
+.tg-card-desc {
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--tg-muted);
+}
+
+.tg-card-cta {
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--tg-paper);
+}
+
+.tg-card-cta .tg-arrow {
+  transition: transform 0.3s ease;
+}
+
+.tg-card:hover .tg-card-cta .tg-arrow {
+  transform: translateX(5px);
+}
+
+.tg-foot {
+  margin-top: clamp(28px, 4vw, 48px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: color-mix(in srgb, var(--tg-muted) 85%, transparent);
+}
+
+/* 交错入场 */
+.tg-rise {
+  opacity: 0;
+  transform: translateY(22px);
+  animation: tg-rise-in 0.7s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes tg-rise-in {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 离场：整页上浮淡出 */
+.tg-leaving {
+  animation: tg-leave 0.5s cubic-bezier(0.55, 0, 0.78, 0.2) forwards;
+}
+
+@keyframes tg-leave {
+  to {
+    opacity: 0;
+    transform: translateY(-40px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tg-rise,
+  .tg-leaving,
+  .tg-card,
+  .tg-card-cta .tg-arrow {
+    animation: none !important;
+    transition: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}

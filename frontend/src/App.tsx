@@ -3,7 +3,9 @@ import {
   Outlet,
   RouterProvider,
   createBrowserRouter,
+  useLocation,
 } from "react-router-dom";
+import ThemeToggle from "./components/ThemeToggle";
 import IntroGate from "./components/flow/IntroGate";
 import OriginDestinationStep from "./components/flow/OriginDestinationStep";
 import RouteStartChoice from "./components/flow/RouteStartChoice";
@@ -19,12 +21,20 @@ import { useAuthStore } from "./store/authStore";
 // 根布局：路由出口 + 全局浮层（登录弹窗 / Toast 跨路由持久挂载）。
 function RootLayout() {
   const bootstrap = useAuthStore((s) => s.bootstrap);
+  const { pathname } = useLocation();
+  // 工作台由 TopNav 自带主题切换；其余路由（落地/流程页）用固定右上角浮标切换。
+  const showFloatingToggle = !pathname.startsWith("/workspace");
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
   return (
     <>
       <Outlet />
+      {showFloatingToggle && (
+        <div className="fixed right-4 top-4 z-[60]">
+          <ThemeToggle />
+        </div>
+      )}
       <AuthDialog />
       <Toast />
     </>

@@ -1,102 +1,105 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Compass, Plane, Sparkles } from "lucide-react";
+import { Compass, Plane } from "lucide-react";
+import { motion, useReducedMotion } from "motion/react";
 import { usePlanFlowStore } from "../../store/planFlowStore";
 import type { PlanningMode } from "../../types";
+import "./IntroGate.css";
 
 export default function IntroGate() {
   const setMode = usePlanFlowStore((s) => s.setMode);
   const navigate = useNavigate();
+  const reduce = useReducedMotion();
   const [leaving, setLeaving] = useState(false);
 
   function choose(mode: PlanningMode) {
     if (leaving) return;
     setMode(mode);
     setLeaving(true);
-    // traffic_first → 选城市/日期；route_first → 选「已有城市/只有景点类型」
     const to = mode === "traffic_first" ? "/plan/cities" : "/plan/route";
-    window.setTimeout(() => navigate(to), 560);
+    window.setTimeout(() => navigate(to), 500);
   }
 
   const cards: {
     mode: PlanningMode;
+    num: string;
     title: string;
     desc: string;
     icon: typeof Plane;
-    tone: string;
   }[] = [
     {
       mode: "traffic_first",
-      title: "从大交通 / 往返日期开始",
-      desc: "先比较往返机票与日期，再据此安排每天的游玩节奏。",
+      num: "01",
+      title: "从大交通与日期开始",
+      desc: "先比较往返机票和日期，再据此安排每天的游玩节奏。",
       icon: Plane,
-      tone: "from-clay/15 to-clay-soft",
     },
     {
       mode: "route_first",
+      num: "02",
       title: "从游玩景点开始",
       desc: "先挑想去的地点，地图实时打点，最后反推交通与日程。",
       icon: Compass,
-      tone: "from-moss/12 to-moss/5",
     },
   ];
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center px-6 py-16">
-      <div
-        className="mb-12 text-center"
-        style={{ animation: "var(--animate-rise-in)" }}
-      >
-        <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-line bg-surface px-4 py-1.5 text-sm font-semibold text-clay">
-          <Sparkles className="h-4 w-4" />
+    <div className={`tg-root ${leaving ? "tg-leaving" : ""}`}>
+      <div className="tg-grain" aria-hidden="true" />
+      <div className="tg-shell">
+        <span className="tg-eyebrow tg-rise" style={{ animationDelay: "40ms" }}>
+          <span className="tg-dot" />
           itravel · 智能旅程规划
-        </div>
-        <h1 className="text-4xl font-semibold tracking-tight text-ink md:text-6xl">
-          你想怎么开始这趟旅行？
-        </h1>
-        <p className="mx-auto mt-4 max-w-xl text-base text-stone md:text-lg">
-          重行程计划，弱 AI 聊天。先选一个起点，剩下的交给地图、日程和 itravel。
-        </p>
-      </div>
+        </span>
 
-      <div className="grid w-full max-w-5xl gap-6 md:grid-cols-2">
-        {cards.map((card, index) => {
-          const Icon = card.icon;
-          return (
-            <button
-              key={card.mode}
-              onClick={() => choose(card.mode)}
-              className="group floating-card relative overflow-hidden p-8 text-left transition-transform duration-300 hover:-translate-y-2"
-              style={{
-                animation: leaving
-                  ? "var(--animate-rise-out)"
-                  : "var(--animate-rise-in)",
-                animationDelay: leaving ? `${index * 80}ms` : `${index * 120}ms`,
-              }}
-            >
-              <div
-                className={`absolute inset-0 -z-0 bg-gradient-to-br ${card.tone} opacity-0 transition-opacity duration-300 group-hover:opacity-100`}
-              />
-              <div className="relative z-10">
-                <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-3xl bg-ink text-cream shadow-soft">
-                  <Icon className="h-8 w-8" />
-                </div>
-                <h2 className="text-2xl font-semibold tracking-tight text-ink md:text-3xl">
-                  {card.title}
-                </h2>
-                <p className="mt-3 text-base leading-relaxed text-stone">
-                  {card.desc}
-                </p>
-                <span className="mt-6 inline-flex items-center gap-2 text-sm font-semibold text-clay">
-                  选择并继续
-                  <span className="transition-transform duration-300 group-hover:translate-x-1">
-                    →
+        <h1 className="tg-title tg-rise" style={{ animationDelay: "120ms" }}>
+          这趟旅行，想<span className="tg-em">怎么开始</span>？
+        </h1>
+
+        <p className="tg-sub tg-rise" style={{ animationDelay: "220ms" }}>
+          先选一个起点，剩下的交给地图、日程和对话，吃住行一站排好。
+        </p>
+
+        <div className="tg-grid">
+          {cards.map((card, index) => {
+            const Icon = card.icon;
+            return (
+              <div key={card.mode} className={index === 1 ? "md:mt-10" : ""}>
+                <motion.button
+                  onClick={() => choose(card.mode)}
+                  className="tg-card"
+                  initial={reduce ? false : { opacity: 0, y: 22 }}
+                  animate={reduce ? undefined : { opacity: 1, y: 0 }}
+                  transition={{
+                    delay: 0.32 + index * 0.11,
+                    type: "spring",
+                    stiffness: 220,
+                    damping: 24,
+                  }}
+                  whileHover={reduce ? undefined : { y: -6 }}
+                  whileTap={reduce ? undefined : { scale: 0.99 }}
+                >
+                  <span className="tg-card-num">{card.num}</span>
+                  <span className="tg-card-icon">
+                    <Icon className="h-6 w-6" strokeWidth={1.75} />
                   </span>
-                </span>
+                  <span className="tg-card-title">{card.title}</span>
+                  <span className="tg-card-desc">{card.desc}</span>
+                  <span className="tg-card-cta">
+                    选择并继续
+                    <span className="tg-arrow">→</span>
+                  </span>
+                </motion.button>
               </div>
-            </button>
-          );
-        })}
+            );
+          })}
+        </div>
+
+        <div className="tg-foot tg-rise" style={{ animationDelay: "560ms" }}>
+          <span>实时地图打点</span>
+          <span>顺路日程</span>
+          <span>一句话改方案</span>
+        </div>
       </div>
     </div>
   );

@@ -4,6 +4,7 @@ import { Home, LogOut, MapPinned, Save, User } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { saveItinerary } from "../../api/client";
+import ThemeToggle from "../ThemeToggle";
 import { usePlanFlowStore } from "../../store/planFlowStore";
 import { useItineraryStore } from "../../store/itineraryStore";
 import { useChatStore } from "../../store/chatStore";
@@ -99,6 +100,8 @@ export default function TopNav() {
           <Save className="h-4 w-4" />
           {saving ? "保存中…" : "保存计划"}
         </Button>
+
+        <ThemeToggle />
 
         {/* 右上角用户按钮 */}
         <div className="relative">
