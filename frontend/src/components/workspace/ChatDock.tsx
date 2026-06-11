@@ -70,14 +70,14 @@ export default function ChatDock() {
 
   return (
     <div className="flex flex-col bg-surface">
-      <div className="flex items-center gap-2 border-b border-line px-4 py-2.5">
-        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-clay text-white">
-          <Sparkles className="h-3.5 w-3.5" />
+      <div className="flex items-center gap-2 border-b border-line px-4 py-2">
+        <div className="flex h-5 w-5 items-center justify-center rounded-full bg-clay text-white">
+          <Sparkles className="h-3 w-3" />
         </div>
-        <span className="text-sm font-semibold text-ink">和 itravel 对话</span>
+        <span className="text-xs font-semibold text-ink">和 itravel 对话</span>
       </div>
 
-      <div className="max-h-[34vh] min-h-0 flex-1 overflow-y-auto px-4 py-3">
+      <div className="max-h-[18vh] min-h-0 flex-1 overflow-y-auto px-4 py-2">
         {hasMessages ? (
           <MessageList
             messages={messages}

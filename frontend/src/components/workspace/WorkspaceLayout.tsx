@@ -68,10 +68,13 @@ export default function WorkspaceLayout() {
             非折叠时用 flex-basis 42% + flex-1 收缩，与右侧 58% 对称、不溢出（#7） */}
         <section
           className={`flex min-h-0 min-w-0 flex-col gap-3 ${
-            mapCollapsed ? "mx-auto w-full max-w-3xl" : "flex-1"
+            mapCollapsed ? "mx-auto w-full max-w-3xl" : ""
           }`}
           style={{
-            flexBasis: mapCollapsed ? undefined : "42%",
+            // 选大交通时选票栏放大到 50%；行程规划时左列 42%。地图侧 flex-1 填充其余。
+            flexBasis: mapCollapsed ? undefined : showFlights ? "50%" : "42%",
+            flexGrow: mapCollapsed ? 1 : 0,
+            flexShrink: mapCollapsed ? 1 : 0,
             transition: `flex-basis 500ms ${ease}`,
           }}
         >
@@ -105,16 +108,16 @@ export default function WorkspaceLayout() {
           </button>
         )}
 
-        {/* 右列：标准地图（延伸到底部）。折叠时 flex-basis 0 收起。 */}
+        {/* 右列：标准地图（延伸到底部），flex-1 填充左列以外的空间。折叠时收起。 */}
         <section
           className="relative min-h-0 overflow-hidden rounded-3xl border border-line bg-surface shadow-soft"
           style={{
-            flexBasis: mapCollapsed ? "0%" : "58%",
-            flexGrow: 0,
-            flexShrink: mapCollapsed ? 1 : 0,
+            flexBasis: mapCollapsed ? "0%" : "0%",
+            flexGrow: mapCollapsed ? 0 : 1,
+            flexShrink: 1,
             opacity: mapCollapsed ? 0 : 1,
             pointerEvents: mapCollapsed ? "none" : undefined,
-            transition: `flex-basis 500ms ${ease}, opacity 400ms ${ease}`,
+            transition: `flex-grow 500ms ${ease}, opacity 400ms ${ease}`,
           }}
         >
           <TripMap collapsed={mapCollapsed} />

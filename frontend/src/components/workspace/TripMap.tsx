@@ -103,9 +103,15 @@ function bearingDeg(a: [number, number], b: [number, number]): number {
   return (-Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI;
 }
 
+// 朝左行进时（|angle|>90°）垂直翻转，避免图标底朝天。
+function uprightTransform(angleDeg: number): string {
+  const flip = Math.abs(angleDeg) > 90 ? " scaleY(-1)" : "";
+  return `rotate(${angleDeg}deg)${flip}`;
+}
+
 function planeContent(angleDeg: number): string {
   return `
-    <div style="transform:translate(-50%,-50%) rotate(${angleDeg}deg);filter:drop-shadow(0 3px 6px rgba(60,45,30,.35));">
+    <div style="transform:translate(-50%,-50%) ${uprightTransform(angleDeg)};filter:drop-shadow(0 3px 6px rgba(60,45,30,.35));">
       <svg width="30" height="30" viewBox="0 0 32 32">
         <path d="M30 16 C30 17 29 17.6 27.6 17.8 L20 19 L15.5 27 C15.2 27.6 14.7 28 14 28 L12.4 28 L14.2 19.4 L7.6 20.4 L5.6 23.2 C5.4 23.5 5.1 23.7 4.7 23.7 L3.4 23.7 L4.6 19.2 L3.4 16 L4.6 12.8 L3.4 8.3 L4.7 8.3 C5.1 8.3 5.4 8.5 5.6 8.8 L7.6 11.6 L14.2 12.6 L12.4 4 L14 4 C14.7 4 15.2 4.4 15.5 5 L20 13 L27.6 14.2 C29 14.4 30 15 30 16 Z"
           fill="#c96442" stroke="#fffdf9" stroke-width="0.8" stroke-linejoin="round"/>
@@ -113,10 +119,10 @@ function planeContent(angleDeg: number): string {
     </div>`;
 }
 
-// 高铁车头（侧视流线型），按行进方向旋转。
+// 高铁车头（侧视流线型），按行进方向旋转；朝左时垂直翻转保持正立。
 function trainContent(angleDeg: number): string {
   return `
-    <div style="transform:translate(-50%,-50%) rotate(${angleDeg}deg);filter:drop-shadow(0 3px 6px rgba(60,45,30,.35));">
+    <div style="transform:translate(-50%,-50%) ${uprightTransform(angleDeg)};filter:drop-shadow(0 3px 6px rgba(60,45,30,.35));">
       <svg width="34" height="20" viewBox="0 0 34 20">
         <path d="M2 13 L2 8 C2 7 2.6 6.4 3.6 6.2 L18 4 C24 3.2 30 6 33 10 C33.4 10.5 33.4 11.5 33 12 L32 13 Z"
           fill="#3f6f8f" stroke="#fffdf9" stroke-width="0.8" stroke-linejoin="round"/>
@@ -161,7 +167,6 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
   >(new Map());
   const drawSeqRef = useRef(0);
   const flightOverlaysRef = useRef<AMapAny[]>([]);
-  const animatedFlightIdsRef = useRef<Set<string>>(new Set());
   const rafIdsRef = useRef<number[]>([]);
   const [ready, setReady] = useState(false);
   const [reopenNonce, setReopenNonce] = useState(0);
@@ -214,27 +219,27 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     };
   }, []);
 
-  // 机票曲线飞行动画（交通优先、确认前）。
+  // 大交通曲线（交通优先、确认前）：不再做飞行动画，直接 0.5s 淡入最终曲线 + 顶点图标。
   useEffect(() => {
     const map = mapRef.current;
     const AMap = amapRef.current;
     if (!map || !AMap || !ready || collapsed) return;
 
-    if (mode !== "traffic_first" || flightsConfirmed) {
-      if (flightOverlaysRef.current.length) {
-        map.remove(flightOverlaysRef.current);
-        flightOverlaysRef.current = [];
-      }
-      animatedFlightIdsRef.current.clear();
-      return;
+    // 每次切票/换出行方式都先清空旧曲线，避免残留（修：飞机换高铁后旧轨迹不消失）。
+    if (flightOverlaysRef.current.length) {
+      map.remove(flightOverlaysRef.current);
+      flightOverlaysRef.current = [];
     }
+    rafIdsRef.current.forEach((id) => cancelAnimationFrame(id));
+    rafIdsRef.current = [];
+
+    if (mode !== "traffic_first" || flightsConfirmed) return;
 
     const fromAir = findCity(origin)?.airport ?? outbound?.from;
     const toAir = findCity(primaryDestination)?.airport ?? outbound?.to;
     if (!fromAir || !toAir) return;
 
     type Leg = {
-      id: string;
       kind: string;
       from: [number, number];
       to: [number, number];
@@ -243,7 +248,6 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     const legs: Leg[] = [];
     if (outbound) {
       legs.push({
-        id: outbound.id,
         kind: outbound.kind,
         from: [fromAir.lng, fromAir.lat],
         to: [toAir.lng, toAir.lat],
@@ -252,7 +256,6 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     }
     if (returnFlight) {
       legs.push({
-        id: returnFlight.id,
         kind: returnFlight.kind,
         from: [toAir.lng, toAir.lat],
         to: [fromAir.lng, fromAir.lat],
@@ -260,21 +263,19 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
       });
     }
 
-    let fitted = false;
+    const allPts: [number, number][] = [];
     for (const leg of legs) {
-      if (animatedFlightIdsRef.current.has(leg.id)) continue;
-      animatedFlightIdsRef.current.add(leg.id);
-      // 高铁走近乎贴地的平缓弧（贴铁路直线感），飞机走明显上拱弧。
+      // 高铁走近乎贴地的平缓弧，飞机走明显上拱弧。
       const lift = leg.kind === "train" ? 0.06 : 1;
       const pts = bezierArc(leg.from, leg.to, leg.sign * lift);
-      if (!fitted) {
-        fitted = true;
-        const fitLine = new AMap.Polyline({ path: pts, strokeOpacity: 0 });
-        map.add(fitLine);
-        map.setFitView([fitLine], false, [90, 90, 90, 90]);
-        map.remove(fitLine);
-      }
-      animateArc(pts, leg.kind);
+      allPts.push(...pts);
+      drawLeg(pts, leg.kind);
+    }
+    if (allPts.length) {
+      const fitLine = new AMap.Polyline({ path: allPts, strokeOpacity: 0 });
+      map.add(fitLine);
+      map.setFitView([fitLine], false, [90, 90, 90, 90]);
+      map.remove(fitLine);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, collapsed, mode, flightsConfirmed, outbound?.id, returnFlight?.id, origin, primaryDestination]);
@@ -286,76 +287,48 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     };
   }, []);
 
-  function animateArc(pts: [number, number][], kind = "flight") {
+  // 0.5s 淡入：最终整条曲线 + 顶点处的图标，无逐帧飞行。
+  function drawLeg(pts: [number, number][], kind = "flight") {
     const AMap = amapRef.current;
     const map = mapRef.current;
     if (!AMap || !map || pts.length < 2) return;
 
     const color = kind === "train" ? "#3f6f8f" : "#c96442";
-    const offsetY = kind === "train" ? -10 : -14;
-
-    // 渐显尾迹底线（淡）+ 走过的实线，营造拖尾。
-    const trail = new AMap.Polyline({
-      path: pts,
-      strokeColor: color,
-      strokeWeight: 2,
-      strokeOpacity: 0.18,
-      strokeStyle: kind === "train" ? "dashed" : "solid",
-      strokeDasharray: kind === "train" ? [6, 6] : undefined,
-      lineJoin: "round",
-      lineCap: "round",
-    });
-    map.add(trail);
-    flightOverlaysRef.current.push(trail);
+    const apexIndex = Math.floor(pts.length / 2);
+    const apex = pts[apexIndex];
+    const dir = bearingDeg(pts[apexIndex - 1], pts[apexIndex + 1] ?? apex);
 
     const line = new AMap.Polyline({
-      path: [pts[0]],
+      path: pts,
       strokeColor: color,
       strokeWeight: kind === "train" ? 4 : 3,
-      strokeOpacity: 0.95,
+      strokeOpacity: 0,
+      strokeStyle: kind === "train" ? "dashed" : "solid",
+      strokeDasharray: kind === "train" ? [6, 6] : undefined,
       lineJoin: "round",
       lineCap: "round",
     });
     map.add(line);
     flightOverlaysRef.current.push(line);
 
-    const vehicle = new AMap.Marker({
-      position: pts[0],
-      content: vehicleContent(kind, bearingDeg(pts[0], pts[1])),
-      offset: new AMap.Pixel(0, offsetY),
+    const icon = new AMap.Marker({
+      position: apex,
+      content: vehicleContent(kind, dir),
+      offset: new AMap.Pixel(0, kind === "train" ? -16 : -22),
+      opacity: 0,
       zIndex: 200,
     });
-    map.add(vehicle);
-    flightOverlaysRef.current.push(vehicle);
+    map.add(icon);
+    flightOverlaysRef.current.push(icon);
 
-    const segments = pts.length - 1;
-    const duration = kind === "train" ? 1900 : 1600;
+    const duration = 500;
     const start = performance.now();
-
     const tick = (now: number) => {
       if (!mapRef.current) return;
-      const raw = Math.min(1, (now - start) / duration);
-      const p = easeInOut(raw); // 平滑缓动，两端慢中间快（#5）
-      const k = Math.max(1, Math.floor(p * segments));
-      line.setPath(pts.slice(0, k + 1));
-      vehicle.setPosition(pts[k]);
-      vehicle.setContent(vehicleContent(kind, bearingDeg(pts[k - 1], pts[k])));
-      if (raw < 1) {
-        rafIdsRef.current.push(requestAnimationFrame(tick));
-        return;
-      }
-      map.remove(vehicle);
-      const apexIndex = Math.floor(pts.length / 2);
-      const apex = pts[apexIndex];
-      const dir = bearingDeg(pts[apexIndex - 1], pts[apexIndex + 1] ?? apex);
-      const stat = new AMap.Marker({
-        position: apex,
-        content: vehicleContent(kind, dir),
-        offset: new AMap.Pixel(0, kind === "train" ? -16 : -22),
-        zIndex: 200,
-      });
-      map.add(stat);
-      flightOverlaysRef.current.push(stat);
+      const p = easeInOut(Math.min(1, (now - start) / duration));
+      line.setOptions({ strokeOpacity: 0.95 * p });
+      icon.setOpacity?.(p);
+      if (p < 1) rafIdsRef.current.push(requestAnimationFrame(tick));
     };
     rafIdsRef.current.push(requestAnimationFrame(tick));
   }
