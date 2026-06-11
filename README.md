@@ -1,7 +1,7 @@
-# 智能旅游规划伴侣（Smart Travel Planner Agent）
+# itravel
 
-重「行程规划与可视化」、弱「AI 纯文本聊天」的 Web 端智能旅游规划 Agent。
-界面对齐 Claude.com 设计语言（米白底 + 赤陶主色 + 衬线标题），用「分步决策 → 卡片 / 地图 / 日程」帮用户把吃住行定下来，聊天只作简短辅助。
+**itravel** — 行程优先、弱 AI 聊天的 Web 端智能旅行规划 Agent。
+界面对齐 Claude.com 设计语言（米白底 + 赤陶主色 + 衬线标题），用「分步决策 → 卡片 / 地图 / 日程」帮你把吃住行定下来，聊天只作简短辅助。
 
 产品规格见 [`docs/prd.md`](docs/prd.md)，技术方案见 [`docs/dev_doc.md`](docs/dev_doc.md)。
 
