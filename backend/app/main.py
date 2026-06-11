@@ -35,6 +35,8 @@ if settings.jwt_secret == "dev-only-change-me":
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
+    # 本地开发：放行 localhost/127.0.0.1 任意端口，避免 Vite 端口跳变（5173→5174…）导致预检 400
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

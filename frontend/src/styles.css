@@ -4,28 +4,64 @@
  * Claude.com 风格设计令牌（Tailwind v4 @theme）
  * 米白底 + 赤陶主色 + 衬线标题，柔和描边与阴影。
  * ------------------------------------------------------------------------- */
+/* 运行时主题变量：浅色为默认（:root），深色在 .dark。切换只翻这里，
+ * @theme 的颜色 token 指向这些变量，现有 bg-surface/text-ink/bg-clay 等工具类自动随主题翻转。 */
+:root {
+  color-scheme: light;
+  --bg: #f6f5f1; /* 干净纸白（非被 ban 的米黄系） */
+  --bg-elev: #fffefb;
+  --bg-sunken: #ece8df;
+  --fg: #221e19; /* 暖近黑 */
+  --fg-muted: #6b645a;
+  --line: #e6e0d4;
+  --line-strong: #d6cdbd;
+  --accent: #e25734; /* 单一高饱和 ember 强调 */
+  --accent-bright: #ff6a3d;
+  --accent-soft: #f7ddd1;
+  --shadow-1: 0 18px 48px rgba(60, 45, 30, 0.1);
+  --shadow-2: 0 36px 90px rgba(60, 45, 30, 0.18);
+}
+
+.dark {
+  color-scheme: dark;
+  --bg: #161210; /* 暖近黑，非纯黑 */
+  --bg-elev: #1f1916;
+  --bg-sunken: #120e0c;
+  --fg: #f3eee4; /* 纸色文字 */
+  --fg-muted: #b3aa9c;
+  --line: rgba(243, 238, 228, 0.14);
+  --line-strong: rgba(243, 238, 228, 0.24);
+  --accent: #ff6a3d;
+  --accent-bright: #ff7d54;
+  --accent-soft: rgba(255, 106, 61, 0.16);
+  --shadow-1: 0 18px 48px rgba(0, 0, 0, 0.5);
+  --shadow-2: 0 36px 90px rgba(0, 0, 0, 0.62);
+}
+
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
     sans-serif;
-  --font-serif: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-serif: "Space Grotesk", system-ui, "PingFang SC", "Microsoft YaHei",
+    sans-serif;
 
-  --color-cream: #f7f4ee;
-  --color-ivory: #fbfaf6;
-  --color-sand: #efe9dd;
-  --color-surface: #fffdf9;
-  --color-clay: #c96442;
-  --color-clay-bright: #d97757;
-  --color-clay-soft: #f0d9cf;
-  --color-ink: #2a2622;
-  --color-stone: #6f6961;
-  --color-line: #e7e0d3;
-  --color-line-strong: #d8cfbe;
+  /* 颜色 token 指向运行时变量（随主题翻转） */
+  --color-cream: var(--bg);
+  --color-ivory: var(--bg-elev);
+  --color-sand: var(--bg-sunken);
+  --color-surface: var(--bg-elev);
+  --color-clay: var(--accent);
+  --color-clay-bright: var(--accent-bright);
+  --color-clay-soft: var(--accent-soft);
+  --color-ink: var(--fg);
+  --color-stone: var(--fg-muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
   --color-moss: #4f7a5b;
   --color-sky: #3f6f8f;
   --color-warning: #b45309;
 
-  --shadow-soft: 0 18px 48px rgba(60, 45, 30, 0.1);
-  --shadow-float: 0 36px 90px rgba(60, 45, 30, 0.18);
+  --shadow-soft: var(--shadow-1);
+  --shadow-float: var(--shadow-2);
 
   --animate-rise-in: rise-in 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
   --animate-rise-out: rise-out 0.55s cubic-bezier(0.55, 0, 0.78, 0.2) both;
@@ -46,21 +82,24 @@
   body {
     margin: 0;
     min-height: 100vh;
-    color: var(--color-ink);
+    color: var(--fg);
     font-family: var(--font-sans);
     background:
       radial-gradient(
         120% 80% at 12% -10%,
-        rgba(201, 100, 66, 0.12),
+        color-mix(in srgb, var(--accent) 12%, transparent),
         transparent 60%
       ),
       radial-gradient(
         90% 70% at 100% 0%,
-        rgba(79, 122, 91, 0.08),
+        color-mix(in srgb, var(--color-moss) 9%, transparent),
         transparent 55%
       ),
-      var(--color-cream);
+      var(--bg);
     -webkit-font-smoothing: antialiased;
+    transition:
+      background-color 0.25s ease,
+      color 0.25s ease;
   }
 
   h1,
@@ -157,12 +196,12 @@
   0% {
     border-color: var(--color-clay);
     box-shadow:
-      0 0 0 0 rgba(201, 100, 66, 0.5),
-      0 0 16px 2px rgba(201, 100, 66, 0.55);
+      0 0 0 0 color-mix(in srgb, var(--accent) 50%, transparent),
+      0 0 16px 2px color-mix(in srgb, var(--accent) 55%, transparent);
   }
   100% {
     border-color: var(--color-line);
-    box-shadow: 0 0 0 0 rgba(201, 100, 66, 0);
+    box-shadow: 0 0 0 0 transparent;
   }
 }
 
@@ -170,11 +209,11 @@
   0%,
   100% {
     border-color: var(--color-line-strong);
-    box-shadow: 0 0 0 0 rgba(201, 100, 66, 0);
+    box-shadow: 0 0 0 0 transparent;
   }
   50% {
     border-color: var(--color-clay);
-    box-shadow: 0 0 0 4px rgba(201, 100, 66, 0.16);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
   }
 }
 
@@ -205,7 +244,7 @@
 .intro-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(247, 244, 238, 0.4);
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
   backdrop-filter: blur(8px);
   animation: backdrop-fade 2s ease-in-out forwards;
 }
@@ -235,13 +274,13 @@
   0%,
   100% {
     border-color: var(--color-line);
-    box-shadow: 0 0 0 0 rgba(201, 100, 66, 0);
+    box-shadow: 0 0 0 0 transparent;
   }
   50% {
     border-color: var(--color-clay);
     box-shadow:
-      0 0 0 4px rgba(201, 100, 66, 0.16),
-      0 0 18px 2px rgba(201, 100, 66, 0.34);
+      0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent),
+      0 0 18px 2px color-mix(in srgb, var(--accent) 34%, transparent);
   }
 }
 
@@ -282,8 +321,8 @@
 }
 
 .province-path {
-  fill: #efe7d8;
-  stroke: #d8cfbe;
+  fill: var(--color-sand);
+  stroke: var(--color-line-strong);
   stroke-width: 0.6;
   transition:
     fill 0.35s ease,
@@ -291,15 +330,15 @@
 }
 
 .province-path.is-origin {
-  fill: #3f6f8f;
+  fill: var(--color-sky);
 }
 
 .province-path.is-destination {
-  fill: #c96442;
+  fill: var(--color-clay);
 }
 
 .province-path.is-return {
-  fill: #4f7a5b;
+  fill: var(--color-moss);
 }
 
 .no-scrollbar::-webkit-scrollbar {
