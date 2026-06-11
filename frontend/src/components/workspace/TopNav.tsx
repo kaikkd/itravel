@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Home, LogOut, MapPinned, Save, User } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -12,7 +13,6 @@ import { useUiStore } from "../../store/uiStore";
 import MyTripsDialog from "./MyTripsDialog";
 
 export default function TopNav() {
-  const mode = usePlanFlowStore((s) => s.mode);
   const origin = usePlanFlowStore((s) => s.origin);
   const primaryDestination = usePlanFlowStore((s) => s.primaryDestination)();
   const resetFlow = usePlanFlowStore((s) => s.reset);
@@ -24,6 +24,7 @@ export default function TopNav() {
   const logout = useAuthStore((s) => s.logout);
   const openAuth = useUiStore((s) => s.openAuth);
   const showToast = useUiStore((s) => s.showToast);
+  const navigate = useNavigate();
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [tripsOpen, setTripsOpen] = useState(false);
@@ -38,6 +39,7 @@ export default function TopNav() {
     resetChat();
     resetFlights();
     resetFlow();
+    navigate("/");
   }
 
   async function doSave() {
@@ -66,7 +68,7 @@ export default function TopNav() {
   }
 
   return (
-    <header className="flex items-center justify-between border-b border-line bg-surface/80 px-5 py-3 backdrop-blur">
+    <header className="relative z-50 flex items-center justify-between border-b border-line bg-surface/80 px-5 py-3 backdrop-blur">
       <div className="flex items-center gap-3">
         <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-gradient-to-br from-clay to-clay-bright text-sm font-black text-white shadow-soft">
           行
@@ -77,11 +79,6 @@ export default function TopNav() {
         {primaryDestination && (
           <Badge variant="soft">
             {origin || "出发地"} → {primaryDestination}
-          </Badge>
-        )}
-        {mode && (
-          <Badge variant={mode === "traffic_first" ? "sky" : "moss"}>
-            {mode === "traffic_first" ? "交通优先" : "路线优先"}
           </Badge>
         )}
       </div>

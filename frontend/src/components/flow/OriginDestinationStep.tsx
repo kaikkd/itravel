@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { ArrowRight, MapPin, Plane, Search, X } from "lucide-react";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
@@ -25,8 +26,8 @@ export default function OriginDestinationStep() {
     toggleDestination,
     setReturnCity,
     setDayCount,
-    goPhase,
   } = usePlanFlowStore();
+  const navigate = useNavigate();
 
   const [role, setRole] = useState<PlaceRole>("origin");
   const [query, setQuery] = useState("");
@@ -62,7 +63,7 @@ export default function OriginDestinationStep() {
     if (!canStart || leaving) return;
     if (!returnCity) setReturnCity(origin);
     setLeaving(true);
-    window.setTimeout(() => goPhase("workspace"), 560);
+    window.setTimeout(() => navigate("/workspace"), 560);
   }
 
   return (

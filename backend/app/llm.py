@@ -36,9 +36,13 @@ def build_client() -> OpenAI | AzureOpenAI:
 
 
 def stream_chat(
-    messages: list[dict], max_tokens: int = 2000
+    messages: list[dict], max_tokens: int = 4096
 ) -> Iterator[str]:
-    """流式逐 token yield delta 文本。首字快以满足 TTFP/TTFI。"""
+    """流式逐 token yield delta 文本。首字快以满足 TTFP/TTFI。
+
+    每日全景时间轴 JSON 较长（多天 × 多 stop × 坐标/地址/推荐语），
+    默认上调到 4096，调用方可按天数进一步覆盖，避免 JSON 被截断。
+    """
     client = build_client()
     stream = client.chat.completions.create(
         model=settings.openai_model,

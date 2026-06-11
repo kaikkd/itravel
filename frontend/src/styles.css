@@ -381,11 +381,29 @@
   overflow: hidden;
 }
 
-/* 时间轴 stop 卡逐个落入（用 --i 控制延迟，营造层层填充） */
-@keyframes stop-drop {
+/* 时间轴 stop 卡进场：内层 wrapper 用，仅淡入+轻微下移，
+   不与外层 dnd-kit 的 transform 冲突（#2 修复）。 */
+@keyframes stop-card-in {
   from {
     opacity: 0;
-    transform: translateY(14px) scale(0.97);
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.stop-card {
+  animation: stop-card-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--i, 0) * 55ms);
+}
+
+/* 每天卡片进场（按天错峰） */
+@keyframes day-enter {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.985);
   }
   to {
     opacity: 1;
@@ -393,9 +411,9 @@
   }
 }
 
-.stop-drop {
-  animation: stop-drop 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
-  animation-delay: calc(var(--i, 0) * 60ms);
+.day-enter {
+  animation: day-enter 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--i, 0) * 80ms);
 }
 
 /* 时间轴左侧连接线生长 */
@@ -434,4 +452,36 @@
   opacity: 0.85;
   box-shadow: var(--shadow-float);
   cursor: grabbing;
+}
+
+/* route_first 选景点：候选卡飞入堆叠 / 移除 */
+@keyframes card-stack-in {
+  from {
+    opacity: 0;
+    transform: translateY(28px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.card-stack-in {
+  animation: card-stack-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes card-pop {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.04);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.card-pop {
+  animation: card-pop 0.3s ease-out;
 }

@@ -69,8 +69,15 @@ export default function ChatDock() {
   }
 
   return (
-    <div className="flex max-h-[58%] flex-col border-t border-line bg-surface">
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+    <div className="flex flex-col bg-surface">
+      <div className="flex items-center gap-2 border-b border-line px-4 py-2.5">
+        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-clay text-white">
+          <Sparkles className="h-3.5 w-3.5" />
+        </div>
+        <span className="text-sm font-semibold text-ink">和 itravel 对话</span>
+      </div>
+
+      <div className="max-h-[34vh] min-h-0 flex-1 overflow-y-auto px-4 py-3">
         {hasMessages ? (
           <MessageList
             messages={messages}
@@ -89,7 +96,7 @@ export default function ChatDock() {
         )}
       </div>
 
-      <div className="px-4 pb-3">
+      <div className="px-4 pb-3 pt-1">
         <div
           className={`flex items-center gap-2 rounded-full border border-line bg-surface px-2 py-2 shadow-soft ${inputStateClass}`}
         >
@@ -120,11 +127,6 @@ export default function ChatDock() {
           >
             <ArrowUp className="h-5 w-5" />
           </button>
-        </div>
-        <div className="mt-2 text-center text-xs text-stone">
-          {primaryDestination
-            ? `已结合：${origin || "出发地"} → ${primaryDestination} · ${dayCount} 天`
-            : "itravel 会结合你选择的城市与天数给出候选"}
         </div>
       </div>
     </div>

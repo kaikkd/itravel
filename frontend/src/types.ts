@@ -109,17 +109,21 @@ export interface Airport {
   lat: number;
 }
 
+// 出行方式：飞机 / 高铁（每一程可分别选，#4）
+export type TravelMode = "flight" | "train";
+
 export interface Flight {
   id: string;
-  platform: string;
-  airline: string;
-  flightNo: string;
+  kind: TravelMode; // flight | train
+  platform: string; // OTA 平台（携程/12306 等）
+  airline: string; // 航司 或 列车运营（如「复兴号」）
+  flightNo: string; // 航班号 或 车次（G/D）
   from: Airport;
   to: Airport;
   departTime: string;
   arriveTime: string;
   duration: string;
   price: number;
-  baggage: string;
+  baggage: string; // 飞机：行李额；高铁：座席类型
   dateNote: string;
 }

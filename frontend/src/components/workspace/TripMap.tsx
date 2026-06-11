@@ -104,6 +104,31 @@ function planeContent(angleDeg: number): string {
     </div>`;
 }
 
+// 高铁车头（侧视流线型），按行进方向旋转。
+function trainContent(angleDeg: number): string {
+  return `
+    <div style="transform:translate(-50%,-50%) rotate(${angleDeg}deg);filter:drop-shadow(0 3px 6px rgba(60,45,30,.35));">
+      <svg width="34" height="20" viewBox="0 0 34 20">
+        <path d="M2 13 L2 8 C2 7 2.6 6.4 3.6 6.2 L18 4 C24 3.2 30 6 33 10 C33.4 10.5 33.4 11.5 33 12 L32 13 Z"
+          fill="#3f6f8f" stroke="#fffdf9" stroke-width="0.8" stroke-linejoin="round"/>
+        <rect x="6" y="7.5" width="3" height="2.4" rx="0.5" fill="#fffdf9"/>
+        <rect x="10.5" y="7.2" width="3" height="2.4" rx="0.5" fill="#fffdf9"/>
+        <rect x="15" y="6.9" width="3" height="2.4" rx="0.5" fill="#fffdf9"/>
+        <circle cx="9" cy="14.5" r="1.4" fill="#2a2622"/>
+        <circle cx="22" cy="14.5" r="1.4" fill="#2a2622"/>
+      </svg>
+    </div>`;
+}
+
+function vehicleContent(kind: string, angleDeg: number): string {
+  return kind === "train" ? trainContent(angleDeg) : planeContent(angleDeg);
+}
+
+// 平滑缓动：两端慢、中间快，飞行/行进更自然。
+function easeInOut(t: number): number {
+  return t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+}
+
 export default function TripMap({ collapsed = false }: { collapsed?: boolean }) {
   const itinerary = useItineraryStore((s) => s.itinerary);
   const applyTransitResult = useItineraryStore((s) => s.applyTransitResult);
@@ -197,10 +222,18 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     const toAir = findCity(primaryDestination)?.airport ?? outbound?.to;
     if (!fromAir || !toAir) return;
 
-    const legs: { id: string; from: [number, number]; to: [number, number]; sign: number }[] = [];
+    type Leg = {
+      id: string;
+      kind: string;
+      from: [number, number];
+      to: [number, number];
+      sign: number;
+    };
+    const legs: Leg[] = [];
     if (outbound) {
       legs.push({
         id: outbound.id,
+        kind: outbound.kind,
         from: [fromAir.lng, fromAir.lat],
         to: [toAir.lng, toAir.lat],
         sign: 1,
@@ -209,6 +242,7 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     if (returnFlight) {
       legs.push({
         id: returnFlight.id,
+        kind: returnFlight.kind,
         from: [toAir.lng, toAir.lat],
         to: [fromAir.lng, fromAir.lat],
         sign: 1,
@@ -219,7 +253,9 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     for (const leg of legs) {
       if (animatedFlightIdsRef.current.has(leg.id)) continue;
       animatedFlightIdsRef.current.add(leg.id);
-      const pts = bezierArc(leg.from, leg.to, leg.sign);
+      // 高铁走近乎贴地的平缓弧（贴铁路直线感），飞机走明显上拱弧。
+      const lift = leg.kind === "train" ? 0.06 : 1;
+      const pts = bezierArc(leg.from, leg.to, leg.sign * lift);
       if (!fitted) {
         fitted = true;
         const fitLine = new AMap.Polyline({ path: pts, strokeOpacity: 0 });
@@ -227,7 +263,7 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
         map.setFitView([fitLine], false, [90, 90, 90, 90]);
         map.remove(fitLine);
       }
-      animateArc(pts);
+      animateArc(pts, leg.kind);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, collapsed, mode, flightsConfirmed, outbound?.id, returnFlight?.id, origin, primaryDestination]);
@@ -239,54 +275,72 @@ export default function TripMap({ collapsed = false }: { collapsed?: boolean }) 
     };
   }, []);
 
-  function animateArc(pts: [number, number][]) {
+  function animateArc(pts: [number, number][], kind = "flight") {
     const AMap = amapRef.current;
     const map = mapRef.current;
     if (!AMap || !map || pts.length < 2) return;
 
+    const color = kind === "train" ? "#3f6f8f" : "#c96442";
+    const offsetY = kind === "train" ? -10 : -14;
+
+    // 渐显尾迹底线（淡）+ 走过的实线，营造拖尾。
+    const trail = new AMap.Polyline({
+      path: pts,
+      strokeColor: color,
+      strokeWeight: 2,
+      strokeOpacity: 0.18,
+      strokeStyle: kind === "train" ? "dashed" : "solid",
+      strokeDasharray: kind === "train" ? [6, 6] : undefined,
+      lineJoin: "round",
+      lineCap: "round",
+    });
+    map.add(trail);
+    flightOverlaysRef.current.push(trail);
+
     const line = new AMap.Polyline({
       path: [pts[0]],
-      strokeColor: "#c96442",
-      strokeWeight: 3,
-      strokeOpacity: 0.9,
+      strokeColor: color,
+      strokeWeight: kind === "train" ? 4 : 3,
+      strokeOpacity: 0.95,
       lineJoin: "round",
       lineCap: "round",
     });
     map.add(line);
     flightOverlaysRef.current.push(line);
 
-    const plane = new AMap.Marker({
+    const vehicle = new AMap.Marker({
       position: pts[0],
-      content: planeContent(bearingDeg(pts[0], pts[1])),
-      offset: new AMap.Pixel(0, -14),
+      content: vehicleContent(kind, bearingDeg(pts[0], pts[1])),
+      offset: new AMap.Pixel(0, offsetY),
       zIndex: 200,
     });
-    map.add(plane);
-    flightOverlaysRef.current.push(plane);
+    map.add(vehicle);
+    flightOverlaysRef.current.push(vehicle);
 
     const segments = pts.length - 1;
-    const duration = 1500;
+    const duration = kind === "train" ? 1900 : 1600;
     const start = performance.now();
 
     const tick = (now: number) => {
       if (!mapRef.current) return;
-      const p = Math.min(1, (now - start) / duration);
+      const raw = Math.min(1, (now - start) / duration);
+      const p = easeInOut(raw); // 平滑缓动，两端慢中间快（#5）
       const k = Math.max(1, Math.floor(p * segments));
       line.setPath(pts.slice(0, k + 1));
-      plane.setPosition(pts[k]);
-      plane.setContent(planeContent(bearingDeg(pts[k - 1], pts[k])));
-      if (p < 1) {
+      vehicle.setPosition(pts[k]);
+      vehicle.setContent(vehicleContent(kind, bearingDeg(pts[k - 1], pts[k])));
+      if (raw < 1) {
         rafIdsRef.current.push(requestAnimationFrame(tick));
         return;
       }
-      map.remove(plane);
+      map.remove(vehicle);
       const apexIndex = Math.floor(pts.length / 2);
       const apex = pts[apexIndex];
       const dir = bearingDeg(pts[apexIndex - 1], pts[apexIndex + 1] ?? apex);
       const stat = new AMap.Marker({
         position: apex,
-        content: planeContent(dir),
-        offset: new AMap.Pixel(0, -22),
+        content: vehicleContent(kind, dir),
+        offset: new AMap.Pixel(0, kind === "train" ? -16 : -22),
         zIndex: 200,
       });
       map.add(stat);

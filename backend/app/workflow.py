@@ -168,16 +168,60 @@ def _plan_messages(req, intent: Intent) -> list[dict]:
     return messages
 
 
+def _repair_truncated_json(t: str) -> str:
+    """对被 max_tokens 截断的 JSON 尽力补全。
+
+    思路：截到最后一个完整闭合的对象（最后一个 `}`），丢弃半截元素，
+    再按括号栈补齐缺失的闭合符。仅用于解析失败后的兜底。
+    """
+    start = t.find("{")
+    if start == -1:
+        return t
+    s = t[start:]
+    last_brace = s.rfind("}")
+    if last_brace == -1:
+        return s
+    s = s[: last_brace + 1]
+    # 在这个前缀上重算括号栈（跳过字符串内字符）
+    stack: list[str] = []
+    in_str = False
+    escape = False
+    for ch in s:
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]" and stack:
+            stack.pop()
+    s = s.rstrip().rstrip(",")
+    s += "".join(reversed(stack))
+    return s
+
+
 def _extract_json(text: str) -> dict:
-    """去掉可能的 markdown fence，截取首个 {...} 解析。"""
+    """去掉可能的 markdown fence，截取首个 {...} 解析；截断时尽力修复。"""
     t = text.strip()
     t = re.sub(r"^```(?:json)?\s*", "", t)
     t = re.sub(r"\s*```$", "", t)
     start = t.find("{")
     end = t.rfind("}")
     if start != -1 and end != -1 and end > start:
-        t = t[start : end + 1]
-    return json.loads(t)
+        candidate = t[start : end + 1]
+    else:
+        candidate = t
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        repaired = _repair_truncated_json(t)
+        return json.loads(repaired)
 
 
 # ---- 规划（单次 LLM 调用 + 1 次修复重试）----
@@ -235,13 +279,19 @@ def _backfill_day(day: DayPlan, city: str) -> None:
             break
 
 
+def _budget_tokens(day_count: int) -> int:
+    """按天数估算输出 token 预算：每天约 7 个 stop × 含坐标/地址/推荐语。"""
+    return min(8000, 1200 + day_count * 1400)
+
+
 def recommend_plan(req) -> tuple[list[DayPlan], bool]:
     """返回 (per-day 时间轴, degraded)。LLM 失败/校验空 → 高德桩兜底。req 为 PlanStreamIn。"""
     intent = build_intent(req)
     messages = _plan_messages(req, intent)
+    max_tokens = _budget_tokens(intent.day_count)
     for attempt in range(2):
         try:
-            buf = "".join(llm.stream_chat(messages))
+            buf = "".join(llm.stream_chat(messages, max_tokens=max_tokens))
             data = _extract_json(buf)
             raw_days = data.get("days", []) if isinstance(data, dict) else []
             reply = data.get("reply") if isinstance(data, dict) else None
@@ -268,6 +318,86 @@ def _attach_reply(days: list[DayPlan], reply) -> None:
     text = reply.strip().replace("\n", " ") if isinstance(reply, str) else ""
     if days:
         setattr(days[0], "_reply", text)
+
+
+# ---- route_first：从用户已选 POI + 紧凑度 估算天数并排日程（#11） ----
+
+_PACE_LABEL = {"compact": "紧凑（每天景点多、少留白）", "balanced": "适中（松弛有度）", "relaxed": "轻松（每天少而精、慢慢逛）"}
+_PACE_PER_DAY = {"compact": 4, "balanced": 3, "relaxed": 2}
+
+
+def _from_pois_messages(req, intent: Intent) -> list[dict]:
+    pace = _PACE_LABEL.get(req.pace or "balanced", _PACE_LABEL["balanced"])
+    selected = [
+        {"name": p.name, "category": p.category, "lng": p.lng, "lat": p.lat,
+         "address": p.address}
+        for p in (req.selected_pois or [])
+    ]
+    sys = _PLAN_SYSTEM_PROMPT + (
+        "\n\n【本次特殊要求：基于用户已选景点排程】\n"
+        "用户已经选定了下面这批必游景点，请你：①按「" + pace + "」的节奏，"
+        "估算一个合理的游玩天数 day_count；②把用户已选景点分配到每一天（不要替换或删除用户已选的景点，"
+        "可顺路重排）；③为每天补齐三餐与一个住宿；④顶层 JSON 额外输出 day_count 字段，"
+        '即 {"day_count": int, "reply": str, "days": [...]}。其余格式与上面的契约一致。'
+    )
+    user = (
+        f"目的地：{intent.city}；节奏：{pace}。用户已选景点（JSON）：\n"
+        + json.dumps(selected, ensure_ascii=False)
+        + "\n请估算天数并把这些景点排进每日全景时间轴，补齐三餐与住宿，严格按 JSON 契约输出。"
+    )
+    return [{"role": "system", "content": sys}, {"role": "user", "content": user}]
+
+
+def _fallback_plan_from_pois(req, intent: Intent) -> tuple[list[DayPlan], int]:
+    """LLM 不可用时：按 pace 每天景点数确定性切分用户已选 POI，桩补三餐住宿。"""
+    from app.schemas import POICreate
+
+    play = [
+        POICreate(name=p.name, category="play", lng=p.lng, lat=p.lat, address=p.address)
+        for p in (req.selected_pois or [])
+    ]
+    per = _PACE_PER_DAY.get(req.pace or "balanced", 3)
+    day_count = max(1, math.ceil(len(play) / per)) if play else intent.day_count
+    days: list[DayPlan] = []
+    for di in range(day_count):
+        chunk = play[di * per : (di + 1) * per]
+        stops = [PlanStop(slot="attraction", poi=p) for p in chunk]
+        day = DayPlan(day_index=di + 1, stops=stops)
+        _backfill_day(day, intent.city)
+        days.append(day)
+    return days, day_count
+
+
+def recommend_plan_from_pois(req) -> tuple[list[DayPlan], int, bool]:
+    """返回 (per-day 时间轴, 估算天数, degraded)。给定已选 POI + pace 让 LLM 估天数并排程。"""
+    intent = build_intent(req)
+    n = max(1, len(req.selected_pois or []))
+    messages = _from_pois_messages(req, intent)
+    for attempt in range(2):
+        try:
+            buf = "".join(llm.stream_chat(messages, max_tokens=_budget_tokens(n)))
+            data = _extract_json(buf)
+            raw_days = data.get("days", []) if isinstance(data, dict) else []
+            reply = data.get("reply") if isinstance(data, dict) else None
+            est = data.get("day_count") if isinstance(data, dict) else None
+            days = _parse_days(raw_days)
+            if days:
+                for day in days:
+                    _backfill_day(day, intent.city)
+                _attach_reply(days, reply)
+                est_days = int(est) if isinstance(est, (int, float)) and est else len(days)
+                return days, est_days, False
+            if attempt == 0:
+                messages = messages + [
+                    {"role": "user", "content": "格式不符或为空，请重新只输出合规 JSON。"}
+                ]
+                continue
+        except Exception:
+            if attempt == 0:
+                continue
+            break
+    days, est_days = _fallback_plan_from_pois(req, intent)
+    return days, est_days, True
 
 
 def _fallback_plan(intent: Intent) -> list[DayPlan]:

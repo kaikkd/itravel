@@ -38,7 +38,8 @@ function buildFlights(from: Airport, to: Airport, outbound: boolean): Flight[] {
   return base.map((b, i) => {
     const [airline, prefix] = AIRLINES[(i + (outbound ? 0 : 2)) % AIRLINES.length];
     return {
-      id: `${outbound ? "out" : "ret"}-${i}`,
+      id: `${outbound ? "out" : "ret"}-air-${i}`,
+      kind: "flight" as const,
       platform: PLATFORMS[i % PLATFORMS.length],
       airline,
       flightNo: `${prefix}${1000 + i * 137}`,
@@ -54,6 +55,52 @@ function buildFlights(from: Airport, to: Airport, outbound: boolean): Flight[] {
   });
 }
 
+// ---- 高铁 mock（与机票同结构，kind=train）----
+const TRAIN_PLATFORMS = ["12306", "携程", "智行"];
+const TRAIN_OPERATORS = ["复兴号", "和谐号"];
+const SEATS = ["二等座", "一等座", "商务座"];
+
+function trainStation(city: string): Airport {
+  const info = findCity(city);
+  return {
+    code: `${city || "出发"}站`,
+    name: `${city || "出发"}站`,
+    city: city || "出发",
+    lng: info?.lng ?? 104.066,
+    lat: info?.lat ?? 30.657,
+  };
+}
+
+function buildTrains(from: Airport, to: Airport, outbound: boolean): Flight[] {
+  const base = outbound
+    ? [
+        { dep: "07:30", arr: "12:10", dur: "4h40m", price: 538, seat: SEATS[0], note: "早班高铁，到站即可开玩" },
+        { dep: "10:20", arr: "15:05", dur: "4h45m", price: 538, seat: SEATS[1], note: "一等座更宽敞，午后到达" },
+        { dep: "14:00", arr: "18:36", dur: "4h36m", price: 880, seat: SEATS[2], note: "商务座，舒适但价更高" },
+      ]
+    : [
+        { dep: "18:40", arr: "23:15", dur: "4h35m", price: 538, seat: SEATS[0], note: "玩满最后一天再返程" },
+        { dep: "15:10", arr: "19:50", dur: "4h40m", price: 538, seat: SEATS[1], note: "下午返程不慌不忙" },
+        { dep: "11:05", arr: "15:40", dur: "4h35m", price: 880, seat: SEATS[2], note: "商务座，上午出发" },
+      ];
+
+  return base.map((b, i) => ({
+    id: `${outbound ? "out" : "ret"}-train-${i}`,
+    kind: "train" as const,
+    platform: TRAIN_PLATFORMS[i % TRAIN_PLATFORMS.length],
+    airline: TRAIN_OPERATORS[i % TRAIN_OPERATORS.length],
+    flightNo: `${i % 2 === 0 ? "G" : "D"}${1200 + i * 96}`,
+    from,
+    to,
+    departTime: b.dep,
+    arriveTime: b.arr,
+    duration: b.dur,
+    price: b.price,
+    baggage: b.seat,
+    dateNote: b.note,
+  }));
+}
+
 export function outboundFlights(originCity: string, destCity: string): Flight[] {
   const from = findCity(originCity)?.airport ?? fallbackAirport(originCity);
   const to = findCity(destCity)?.airport ?? fallbackAirport(destCity);
@@ -64,4 +111,12 @@ export function returnFlights(originCity: string, destCity: string): Flight[] {
   const from = findCity(destCity)?.airport ?? fallbackAirport(destCity);
   const to = findCity(originCity)?.airport ?? fallbackAirport(originCity);
   return buildFlights(from, to, false);
+}
+
+export function outboundTrains(originCity: string, destCity: string): Flight[] {
+  return buildTrains(trainStation(originCity), trainStation(destCity), true);
+}
+
+export function returnTrains(originCity: string, destCity: string): Flight[] {
+  return buildTrains(trainStation(destCity), trainStation(originCity), false);
 }

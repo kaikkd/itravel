@@ -117,10 +117,27 @@ def _mock_stream(content: str):
     return _gen
 
 
+class _SelPoi:
+    def __init__(self, name, lng, lat, category="play", address=None):
+        self.name = name
+        self.category = category
+        self.lng = lng
+        self.lat = lat
+        self.address = address
+
+
 class _Req:
     """轻量 PlanStreamIn 替身（recommend_plan 只读这些属性）。"""
 
-    def __init__(self, destination="成都", day_count=3, free_text=""):
+    def __init__(
+        self,
+        destination="成都",
+        day_count=3,
+        free_text="",
+        plan_source="day_count",
+        pace=None,
+        selected_pois=None,
+    ):
         self.destination = destination
         self.origin = ""
         self.return_city = ""
@@ -129,6 +146,9 @@ class _Req:
         self.free_text = free_text
         self.history = []
         self.current_plan = None
+        self.plan_source = plan_source
+        self.pace = pace
+        self.selected_pois = selected_pois or []
 
 
 def _full_day(day_index: int) -> dict:
@@ -251,3 +271,131 @@ def test_plan_stream_endpoint_event_sequence(monkeypatch):
     assert events == [
         "status", "intent", "skeleton", "status", "reply", "day", "itinerary", "done"
     ]
+
+
+# ---- 截断 JSON 修复（#3）----
+
+
+def test_extract_json_repairs_truncation():
+    full = {"reply": "ok", "days": [_full_day(1)]}
+    s = json.dumps(full, ensure_ascii=False)
+    # 在中途砍断，模拟 max_tokens 截断
+    truncated = s[: int(len(s) * 0.7)]
+    data = workflow._extract_json(truncated)
+    assert isinstance(data, dict)
+    assert data.get("days")  # 至少救回部分天
+    assert len(data["days"][0]["stops"]) >= 1
+
+
+def test_budget_tokens_scales_with_days():
+    assert workflow._budget_tokens(1) < workflow._budget_tokens(7)
+    assert workflow._budget_tokens(100) <= 8000  # 有上限
+
+
+# ---- route_first：从 POI 列表估天数并排程（#11）----
+
+
+def test_recommend_plan_from_pois_valid(monkeypatch):
+    payload = {
+        "day_count": 2,
+        "reply": "按适中节奏排了两天",
+        "days": [_full_day(1), _full_day(2)],
+    }
+    monkeypatch.setattr(workflow.llm, "stream_chat", _mock_stream(json.dumps(payload)))
+    req = _Req(
+        plan_source="poi_list",
+        pace="balanced",
+        selected_pois=[
+            _SelPoi("宽窄巷子", 104.06, 30.66),
+            _SelPoi("武侯祠", 104.04, 30.64),
+        ],
+    )
+    days, est, degraded = workflow.recommend_plan_from_pois(req)
+    assert degraded is False
+    assert est == 2
+    assert len(days) == 2
+
+
+def test_recommend_plan_from_pois_degrades(monkeypatch):
+    monkeypatch.setattr(workflow.llm, "stream_chat", _mock_stream("抱歉无法规划"))
+    req = _Req(
+        plan_source="poi_list",
+        pace="compact",
+        selected_pois=[_SelPoi(f"景点{i}", 104.0 + i / 100, 30.6) for i in range(9)],
+    )
+    days, est, degraded = workflow.recommend_plan_from_pois(req)
+    assert degraded is True
+    # 紧凑=每天4个景点，9个景点 → 3天
+    assert est == 3
+    assert len(days) == 3
+    # 用户已选景点都应保留
+    all_names = {s.poi.name for d in days for s in d.stops}
+    assert "景点0" in all_names and "景点8" in all_names
+
+
+def test_plan_stream_poi_list_event_sequence(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    payload = {"day_count": 1, "reply": "排好了", "days": [_full_day(1)]}
+    monkeypatch.setattr(workflow.llm, "stream_chat", _mock_stream(json.dumps(payload)))
+
+    client = TestClient(app)
+    resp = client.post(
+        "/plan/stream",
+        json={
+            "destination": "成都",
+            "plan_source": "poi_list",
+            "pace": "balanced",
+            "selected_pois": [{"name": "宽窄巷子", "lng": 104.06, "lat": 30.66}],
+        },
+    )
+    assert resp.status_code == 200
+    events = [
+        line.split("event: ", 1)[1]
+        for line in resp.text.splitlines()
+        if line.startswith("event: ")
+    ]
+    # poi_list 模式：estimate 在 skeleton 之前
+    assert events[:4] == ["status", "intent", "status", "estimate"]
+    assert "skeleton" in events and events[-1] == "done"
+
+
+# ---- 新增 JSON 接口：候选 / 选城（#11）----
+
+
+def test_candidates_endpoint(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    payload = {"pois": [
+        {"name": "宽窄巷子", "category": "play", "lng": 104.06, "lat": 30.66, "rec_reason": "成都名片"},
+        {"name": "杜甫草堂", "category": "play", "lng": 104.02, "lat": 30.66},
+    ]}
+    monkeypatch.setattr(workflow.llm, "stream_chat", _mock_stream(json.dumps(payload)))
+    client = TestClient(app)
+    resp = client.post("/plan/candidates", json={"city": "成都", "category": "play"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["degraded"] is False
+    assert len(body["pois"]) == 2
+
+
+def test_suggest_city_endpoint(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    payload = {"reply": "看你爱古迹", "cities": [
+        {"name": "西安", "reason": "历史古迹集中"},
+        {"name": "北京", "reason": "故宫长城"},
+    ]}
+    monkeypatch.setattr(workflow.llm, "stream_chat", _mock_stream(json.dumps(payload)))
+    client = TestClient(app)
+    resp = client.post("/plan/suggest-city", json={"free_text": "我喜欢历史古迹"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["degraded"] is False
+    assert any(c["name"] == "西安" for c in body["cities"])

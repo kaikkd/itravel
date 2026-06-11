@@ -1,18 +1,21 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Compass, Plane, Sparkles } from "lucide-react";
 import { usePlanFlowStore } from "../../store/planFlowStore";
 import type { PlanningMode } from "../../types";
 
 export default function IntroGate() {
   const setMode = usePlanFlowStore((s) => s.setMode);
-  const goPhase = usePlanFlowStore((s) => s.goPhase);
+  const navigate = useNavigate();
   const [leaving, setLeaving] = useState(false);
 
   function choose(mode: PlanningMode) {
     if (leaving) return;
     setMode(mode);
     setLeaving(true);
-    window.setTimeout(() => goPhase("places"), 560);
+    // traffic_first → 选城市/日期；route_first → 选「已有城市/只有景点类型」
+    const to = mode === "traffic_first" ? "/plan/cities" : "/plan/route";
+    window.setTimeout(() => navigate(to), 560);
   }
 
   const cards: {

@@ -1,7 +1,9 @@
 import type {
+  Category,
   Itinerary,
   ItinerarySummary,
   PlanSkeleton,
+  POI,
 } from "../types";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
@@ -191,6 +193,14 @@ export interface ChatTurnPayload {
   content: string;
 }
 
+export interface SelectedPoiPayload {
+  name: string;
+  category?: Category;
+  lng?: number | null;
+  lat?: number | null;
+  address?: string | null;
+}
+
 export interface PlanStreamRequest {
   destination: string;
   origin?: string;
@@ -201,11 +211,16 @@ export interface PlanStreamRequest {
   history?: ChatTurnPayload[];
   // 当前行程（无 id 的 Create 形态），用于多轮最小改动
   current_plan?: unknown;
+  // route_first：基于已选 POI + 节奏估算天数并排程
+  plan_source?: "day_count" | "poi_list";
+  pace?: "compact" | "balanced" | "relaxed";
+  selected_pois?: SelectedPoiPayload[];
 }
 
 export interface PlanHandlers {
   onStatus?: (text: string) => void;
   onIntent?: (data: { city: string; day_count: number; preferences: string[] }) => void;
+  onEstimate?: (data: { day_count: number }) => void;
   onSkeleton?: (skeleton: PlanSkeleton) => void;
   onReply?: (text: string) => void;
   onDay?: (day: Itinerary["days"][number]) => void;
@@ -237,6 +252,9 @@ export function streamPlan(
         break;
       case "intent":
         handlers.onIntent?.(parsed as { city: string; day_count: number; preferences: string[] });
+        break;
+      case "estimate":
+        handlers.onEstimate?.(parsed as { day_count: number });
         break;
       case "skeleton":
         handlers.onSkeleton?.(parsed as PlanSkeleton);
@@ -301,4 +319,57 @@ export function streamPlan(
   })();
 
   return () => controller.abort();
+}
+
+// ---- 景点候选 / 候选城市（route_first，#11） ----
+
+function toPoi(p: Partial<POI>): POI {
+  return {
+    id: 0,
+    amap_id: null,
+    name: p.name ?? "",
+    category: (p.category ?? "play") as Category,
+    lng: p.lng ?? null,
+    lat: p.lat ?? null,
+    address: p.address ?? null,
+    rec_reason: p.rec_reason ?? null,
+    sources: [],
+  };
+}
+
+export async function fetchCandidates(
+  city: string,
+  opts: { category?: Category; keyword?: string; limit?: number } = {},
+): Promise<{ pois: POI[]; degraded: boolean }> {
+  const res = await fetch(`${API_BASE}/plan/candidates`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      city,
+      category: opts.category ?? null,
+      keyword: opts.keyword ?? "",
+      limit: opts.limit ?? 8,
+    }),
+  });
+  if (!res.ok) throw new Error(`/plan/candidates 返回 ${res.status}`);
+  const body = (await res.json()) as { pois: Partial<POI>[]; degraded: boolean };
+  return { pois: body.pois.map(toPoi), degraded: body.degraded };
+}
+
+export interface CityOption {
+  name: string;
+  reason: string;
+}
+
+export async function suggestCity(
+  freeText: string,
+  history: ChatTurnPayload[] = [],
+): Promise<{ reply: string; cities: CityOption[]; degraded: boolean }> {
+  const res = await fetch(`${API_BASE}/plan/suggest-city`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ free_text: freeText, history }),
+  });
+  if (!res.ok) throw new Error(`/plan/suggest-city 返回 ${res.status}`);
+  return res.json();
 }
