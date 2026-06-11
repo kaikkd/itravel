@@ -46,6 +46,25 @@ def test_register_duplicate_email(client):
     assert r.status_code == 409
 
 
+def test_register_normalizes_email_and_blocks_case_duplicates(client):
+    r = _reg(client, "  Mixed.Case@Example.COM  ")
+    assert r.status_code == 200
+    assert r.json()["email"] == "mixed.case@example.com"
+
+    duplicate = _reg(client, "mixed.case@example.com")
+    assert duplicate.status_code == 409
+
+
+def test_login_normalizes_email(client):
+    _reg(client, "mixed.case@example.com")
+    r = client.post(
+        "/auth/login",
+        json={"email": "  MIXED.CASE@example.com  ", "password": "password123"},
+    )
+    assert r.status_code == 200
+    assert r.json()["email"] == "mixed.case@example.com"
+
+
 def test_register_weak_password(client):
     r = client.post("/auth/register", json={"email": "x@y.com", "password": "123"})
     assert r.status_code == 422
@@ -62,6 +81,24 @@ def test_login_rate_limited_after_5(client):
     for _ in range(5):
         client.post("/auth/login", json={"email": "a@b.com", "password": "bad"})
     r = client.post("/auth/login", json={"email": "a@b.com", "password": "bad"})
+    assert r.status_code == 429
+
+
+def test_login_rate_limit_normalizes_email(client):
+    _reg(client, "limit@example.com")
+    variants = [
+        "limit@example.com",
+        " LIMIT@example.com ",
+        "Limit@Example.Com",
+        "limit@EXAMPLE.com",
+        " limit@example.COM",
+    ]
+    for email in variants:
+        client.post("/auth/login", json={"email": email, "password": "bad"})
+
+    r = client.post(
+        "/auth/login", json={"email": "LIMIT@example.com", "password": "bad"}
+    )
     assert r.status_code == 429
 
 
