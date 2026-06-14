@@ -20,6 +20,11 @@
   --accent-soft: #f7ddd1;
   --shadow-1: 0 18px 48px rgba(60, 45, 30, 0.1);
   --shadow-2: 0 36px 90px rgba(60, 45, 30, 0.18);
+  /* 液态玻璃（浅色）：半透底 + 顶部高光 + 内白描边做边缘折射 */
+  --glass-bg: color-mix(in srgb, var(--bg-elev) 62%, transparent);
+  --glass-bg-strong: color-mix(in srgb, var(--bg-elev) 78%, transparent);
+  --glass-hi: rgba(255, 255, 255, 0.55);
+  --glass-edge: rgba(255, 255, 255, 0.7);
 }
 
 .dark {
@@ -36,6 +41,11 @@
   --accent-soft: rgba(255, 106, 61, 0.16);
   --shadow-1: 0 18px 48px rgba(0, 0, 0, 0.5);
   --shadow-2: 0 36px 90px rgba(0, 0, 0, 0.62);
+  /* 液态玻璃（深色）：更低不透明度 + 极淡高光，避免发灰糊面 */
+  --glass-bg: color-mix(in srgb, var(--bg-elev) 46%, transparent);
+  --glass-bg-strong: color-mix(in srgb, var(--bg-elev) 66%, transparent);
+  --glass-hi: rgba(255, 255, 255, 0.14);
+  --glass-edge: rgba(255, 255, 255, 0.16);
 }
 
 @theme {
@@ -232,12 +242,55 @@
 /* ----------------------------------------------------------------------------
  * 复用组件样式
  * ------------------------------------------------------------------------- */
+/* ----------------------------------------------------------------------------
+ * 液态玻璃工具类（taste-skill Appendix C 配方）：
+ * 半透底 + blur+saturate 折射 + 1px 内白描边 + inset 高光做边缘光泽。
+ * ------------------------------------------------------------------------- */
+.glass {
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid var(--glass-edge);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    inset 0 -1px 0 color-mix(in srgb, var(--glass-edge) 30%, transparent),
+    var(--shadow-float);
+}
+
+/* 弹窗 / 顶栏 / Toast：更强模糊 + 更实底色，保证其上文字对比 */
+.glass-strong {
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: blur(28px) saturate(170%);
+  backdrop-filter: blur(28px) saturate(170%);
+  border: 1px solid var(--glass-edge);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    inset 0 -1px 0 color-mix(in srgb, var(--glass-edge) 30%, transparent),
+    var(--shadow-float);
+}
+
 .floating-card {
-  border: 1px solid var(--color-line);
   border-radius: 28px;
-  background: color-mix(in srgb, var(--color-surface) 94%, transparent);
-  box-shadow: var(--shadow-float);
-  backdrop-filter: blur(14px);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-edge);
+  -webkit-backdrop-filter: blur(22px) saturate(165%);
+  backdrop-filter: blur(22px) saturate(165%);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    inset 0 -1px 0 color-mix(in srgb, var(--glass-edge) 30%, transparent),
+    var(--shadow-float);
+}
+
+/* 降级：系统要求减少透明度时，玻璃回落实色，保证可读（mandatory） */
+@media (prefers-reduced-transparency: reduce) {
+  .glass,
+  .glass-strong,
+  .floating-card {
+    background: var(--bg-elev);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border-color: var(--color-line);
+  }
 }
 
 /* 中心提示：背景模糊遮罩 + 逐字浮尘吹散（一次性约 2s） */

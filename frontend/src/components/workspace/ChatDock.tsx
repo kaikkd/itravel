@@ -69,7 +69,7 @@ export default function ChatDock() {
   }
 
   return (
-    <div className="flex flex-col bg-surface">
+    <div className="flex flex-col">
       <div className="flex items-center gap-2 border-b border-line px-4 py-2">
         <div className="flex h-5 w-5 items-center justify-center rounded-full bg-clay text-white">
           <Sparkles className="h-3 w-3" />
@@ -98,7 +98,7 @@ export default function ChatDock() {
 
       <div className="px-4 pb-3 pt-1">
         <div
-          className={`flex items-center gap-2 rounded-full border border-line bg-surface px-2 py-2 shadow-soft ${inputStateClass}`}
+          className={`glass flex items-center gap-2 rounded-full px-2 py-2 ${inputStateClass}`}
         >
           <button
             type="button"

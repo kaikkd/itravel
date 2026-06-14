@@ -78,7 +78,7 @@ export default function WorkspaceLayout() {
         >
           {showFlights ? (
             // 机票分支保留卡片外观
-            <div className="min-h-0 flex-1 overflow-hidden rounded-3xl border border-line bg-surface shadow-soft">
+            <div className="min-h-0 flex-1 overflow-hidden glass rounded-3xl">
               <FlightBoard />
             </div>
           ) : (
@@ -88,7 +88,7 @@ export default function WorkspaceLayout() {
             </div>
           )}
           {chatActive && (
-            <div className="shrink-0 overflow-hidden rounded-3xl border border-line bg-surface shadow-soft">
+            <div className="shrink-0 overflow-hidden glass rounded-3xl">
               <ChatDock />
             </div>
           )}
@@ -100,7 +100,7 @@ export default function WorkspaceLayout() {
             onClick={collapseMap}
             title="收起地图"
             aria-label="收起地图"
-            className="z-10 flex h-11 w-7 shrink-0 items-center justify-center self-center rounded-full border border-line bg-surface text-stone shadow-soft transition-colors hover:text-clay"
+            className="glass z-10 flex h-11 w-7 shrink-0 items-center justify-center self-center rounded-full text-stone transition-colors hover:text-clay"
           >
             <PanelRightClose className="h-4 w-4" />
           </button>
@@ -109,14 +109,14 @@ export default function WorkspaceLayout() {
         {/* 右列：大交通阶段=行程概览卡（30%，常显）；行程规划阶段=地图（45%，可折叠） */}
         {showFlights ? (
           <section
-            className="summary-rise relative min-h-0 overflow-hidden rounded-3xl border border-line bg-surface shadow-soft"
+            className="summary-rise relative min-h-0 overflow-hidden glass rounded-3xl"
             style={{ flexBasis: "30%", flexGrow: 1, flexShrink: 1 }}
           >
             <TripSummaryCard />
           </section>
         ) : (
           <section
-            className="relative min-h-0 overflow-hidden rounded-3xl border border-line bg-surface shadow-soft"
+            className="relative min-h-0 overflow-hidden glass rounded-3xl"
             style={{
               flexBasis: mapCollapsed ? "0%" : "45%",
               flexGrow: 0,

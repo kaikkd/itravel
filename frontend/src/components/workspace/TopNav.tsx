@@ -69,7 +69,7 @@ export default function TopNav() {
   }
 
   return (
-    <header className="relative z-50 flex items-center justify-between border-b border-line bg-surface/80 px-5 py-3 backdrop-blur">
+    <header className="relative z-50 flex items-center justify-between border-b border-[var(--glass-edge)] bg-[var(--glass-bg-strong)] px-5 py-3 backdrop-blur-xl [backdrop-filter:blur(28px)_saturate(170%)] [box-shadow:inset_0_1px_0_var(--glass-hi)]">
       <div className="flex items-center gap-3">
         <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-gradient-to-br from-clay to-clay-bright text-sm font-black text-white shadow-soft">
           行
@@ -107,7 +107,7 @@ export default function TopNav() {
         <div className="relative">
           <button
             onClick={() => (user ? setMenuOpen((o) => !o) : openAuth())}
-            className="flex h-9 w-9 items-center justify-center rounded-full border border-line bg-surface text-ink transition-colors hover:border-clay hover:text-clay"
+            className="glass flex h-9 w-9 items-center justify-center rounded-full text-ink transition-colors hover:text-clay"
             title={user ? user.email : "登录"}
             aria-label={user ? "用户菜单" : "登录"}
           >
@@ -126,7 +126,7 @@ export default function TopNav() {
                 className="fixed inset-0 z-30"
                 onClick={() => setMenuOpen(false)}
               />
-              <div className="chat-enter absolute right-0 top-11 z-40 w-52 overflow-hidden rounded-2xl border border-line bg-surface shadow-float">
+              <div className="glass-strong chat-enter absolute right-0 top-11 z-40 w-52 overflow-hidden rounded-2xl">
                 <div className="border-b border-line px-4 py-3">
                   <div className="text-xs text-stone">已登录</div>
                   <div className="truncate text-sm font-semibold text-ink">
