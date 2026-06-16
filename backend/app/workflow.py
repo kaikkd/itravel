@@ -1,6 +1,7 @@
 import json
 import math
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 from app import amap_stub, llm, validators
@@ -320,6 +321,161 @@ def _attach_reply(days: list[DayPlan], reply) -> None:
         setattr(days[0], "_reply", text)
 
 
+# ---- 按天流式规划（边接 token 边吐已闭合的 day，降低感知延迟）----
+
+_REPLY_RE = re.compile(r'"reply"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def _extract_reply_prefix(text: str) -> str | None:
+    """从（可能不完整的）JSON 文本里提取已闭合的 reply 字符串值；取不到返回 None。
+
+    reply 是契约里的首字段，通常先于 days 完成，可据此在第一天之前先发回复。
+    """
+    m = _REPLY_RE.search(text)
+    if not m:
+        return None
+    try:
+        return json.loads('"' + m.group(1) + '"')  # 反转义
+    except (json.JSONDecodeError, ValueError):
+        return m.group(1)
+
+
+class _DaysStreamParser:
+    """增量扫描器：从持续增长的文本里，按出现顺序吐出 days 数组中「已完整闭合」的对象。
+
+    只关心 "days": [ {...}, {...} ]。在数组内用花括号深度（跳过字符串/转义）判断对象闭合，
+    每闭合一个就把该片段 json.loads 后返回；解析失败的片段跳过（留给末尾全量兜底）。
+    """
+
+    def __init__(self) -> None:
+        self.buf = ""
+        self._array_open = False
+        self._scan = 0
+        self._depth = 0
+        self._obj_start = -1
+        self._in_str = False
+        self._escape = False
+        self.done = False
+
+    def feed(self, chunk: str) -> list[dict]:
+        self.buf += chunk
+        out: list[dict] = []
+        if self.done:
+            return out
+        if not self._array_open:
+            m = re.search(r'"days"\s*:\s*\[', self.buf)
+            if not m:
+                return out
+            self._array_open = True
+            self._scan = m.end()
+        i = self._scan
+        n = len(self.buf)
+        while i < n:
+            ch = self.buf[i]
+            if self._in_str:
+                if self._escape:
+                    self._escape = False
+                elif ch == "\\":
+                    self._escape = True
+                elif ch == '"':
+                    self._in_str = False
+                i += 1
+                continue
+            if ch == '"':
+                self._in_str = True
+            elif ch == "{":
+                if self._depth == 0:
+                    self._obj_start = i
+                self._depth += 1
+            elif ch == "}":
+                if self._depth > 0:
+                    self._depth -= 1
+                    if self._depth == 0 and self._obj_start != -1:
+                        frag = self.buf[self._obj_start : i + 1]
+                        try:
+                            out.append(json.loads(frag))
+                        except json.JSONDecodeError:
+                            pass
+                        self._obj_start = -1
+            elif ch == "]" and self._depth == 0:
+                self.done = True
+                i += 1
+                break
+            i += 1
+        self._scan = i
+        return out
+
+
+def _day_from_raw(raw: dict, city: str, fallback_index: int) -> DayPlan | None:
+    """单个 day 原始 dict → 校验回补后的 DayPlan；无有效 stop 返回 None。"""
+    if not isinstance(raw, dict):
+        return None
+    idx = raw.get("day_index")
+    idx = int(idx) if isinstance(idx, (int, float)) and idx else fallback_index
+    stops = [
+        PlanStop(slot=slot, poi=poi, arrive_time=at, stay_minutes=sm)
+        for slot, poi, at, sm in validators.validate_llm_day_stops(
+            raw.get("stops", []) or []
+        )
+    ]
+    if not stops:
+        return None
+    day = DayPlan(day_index=idx, stops=stops)
+    _backfill_day(day, city)
+    return day
+
+
+def stream_plan_days(req) -> Iterator[tuple[str, object]]:
+    """默认（day_count）路径的按天流式规划。
+
+    依次产出：
+      ("reply", str | None)  —— 在第一个 day 之前恰好一次（仅当确有 day 时）；
+      ("day", DayPlan)       —— 每解析并回补好一天即产出；
+      ("end", {emitted, reply, fallback_days}) —— 收尾，供调用方做兜底与最终回复。
+    """
+    intent = build_intent(req)
+    messages = _plan_messages(req, intent)
+    max_tokens = _budget_tokens(intent.day_count)
+
+    parser = _DaysStreamParser()
+    reply_text: str | None = None
+    reply_yielded = False
+    emitted = 0
+    seq = 0
+    try:
+        for tok in llm.stream_chat(messages, max_tokens=max_tokens):
+            new_days = parser.feed(tok)
+            if reply_text is None:
+                reply_text = _extract_reply_prefix(parser.buf)
+            for raw in new_days:
+                seq += 1
+                day = _day_from_raw(raw, intent.city, seq)
+                if day is None:
+                    continue
+                if not reply_yielded:
+                    reply_yielded = True
+                    yield ("reply", reply_text)
+                emitted += 1
+                yield ("day", day)
+    except Exception:
+        pass  # 交给收尾：全量解析 / 桩兜底
+
+    fallback_days: list[DayPlan] = []
+    full_reply = reply_text
+    try:
+        data = _extract_json(parser.buf)
+        if isinstance(data, dict):
+            if full_reply is None:
+                full_reply = data.get("reply")
+            if emitted == 0:
+                fallback_days = _parse_days(data.get("days", []) or [])
+                for d in fallback_days:
+                    _backfill_day(d, intent.city)
+    except Exception:
+        pass
+    yield ("end", {"emitted": emitted, "reply": full_reply, "fallback_days": fallback_days})
+
+
 # ---- route_first：从用户已选 POI + 紧凑度 估算天数并排日程（#11） ----
 
 _PACE_LABEL = {"compact": "紧凑（每天景点多、少留白）", "balanced": "适中（松弛有度）", "relaxed": "轻松（每天少而精、慢慢逛）"}
@@ -547,30 +703,28 @@ def _sequential_times(day: DayPlan) -> list[str]:
     return times
 
 
+def assemble_day(day: DayPlan) -> DayCreate:
+    """把单天 DayPlan 组装为 DayCreate：分配单调到达时间 + 相邻交通段。"""
+    seq_times = _sequential_times(day)
+    stops: list[StopCreate] = []
+    transits: list[TransitCreate] = []
+    for oi, ps in enumerate(day.stops, start=1):
+        stops.append(
+            StopCreate(
+                order_index=oi,
+                poi=ps.poi,
+                arrive_time=seq_times[oi - 1],
+                stay_minutes=ps.stay_minutes or _DEFAULT_STAY.get(ps.slot),
+            )
+        )
+        if oi > 1:
+            transits.append(_transit_for(day.stops[oi - 2].poi, ps.poi, oi - 1, oi))
+    return DayCreate(day_index=day.day_index, stops=stops, transits=transits)
+
+
 def assemble_draft(req, days: list[DayPlan]) -> ItineraryCreate:
     """组装为 ItineraryCreate，含 Stop 排序、arrive_time/stay_minutes 与相邻 Transit。"""
     intent = build_intent(req)
-    day_creates: list[DayCreate] = []
-    for day in days:
-        seq_times = _sequential_times(day)
-        stops: list[StopCreate] = []
-        transits: list[TransitCreate] = []
-        for oi, ps in enumerate(day.stops, start=1):
-            stops.append(
-                StopCreate(
-                    order_index=oi,
-                    poi=ps.poi,
-                    arrive_time=seq_times[oi - 1],
-                    stay_minutes=ps.stay_minutes or _DEFAULT_STAY.get(ps.slot),
-                )
-            )
-            if oi > 1:
-                transits.append(
-                    _transit_for(day.stops[oi - 2].poi, ps.poi, oi - 1, oi)
-                )
-        day_creates.append(
-            DayCreate(day_index=day.day_index, stops=stops, transits=transits)
-        )
-
+    day_creates = [assemble_day(day) for day in days]
     title = f"{intent.city}{intent.day_count}日游"
     return ItineraryCreate(title=title, city=intent.city, status="draft", days=day_creates)

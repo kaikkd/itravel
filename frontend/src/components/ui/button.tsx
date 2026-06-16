@@ -10,7 +10,8 @@ const buttonVariants = cva(
       variant: {
         primary: "bg-clay text-white shadow-soft hover:bg-clay-bright",
         secondary: "bg-sand text-ink hover:bg-line-strong",
-        outline: "border border-line-strong bg-surface text-ink hover:bg-sand",
+        outline:
+          "border border-[var(--glass-edge)] bg-[var(--glass-bg)] text-ink backdrop-blur-md hover:bg-sand",
         ghost: "text-stone hover:bg-sand hover:text-ink",
         soft: "bg-clay-soft text-clay hover:bg-clay/15",
         ink: "bg-ink text-cream hover:bg-ink/90",

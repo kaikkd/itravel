@@ -149,7 +149,7 @@ export default function ScheduleColumn() {
 
       {/* 手动加点弹窗 */}
       <Dialog open={addDay != null} onOpenChange={(o) => !o && setAddDay(null)}>
-        <DialogContent className="max-w-lg border-line bg-surface">
+        <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle className="font-serif text-xl text-ink">
               给第 {addDay} 天添加地点
@@ -251,7 +251,7 @@ function SkeletonDays({ count }: { count: number }) {
       {Array.from({ length: count }).map((_, di) => (
         <section
           key={di}
-          className="rounded-3xl border border-line bg-ivory/60 p-4"
+          className="glass rounded-3xl p-4"
           style={{ ["--i"]: di } as React.CSSProperties}
         >
           <div className="skeleton mb-3 h-5 w-24 rounded-full" />
@@ -303,10 +303,10 @@ function DayBlock({
   return (
     <section
       onClick={onActivate}
-      className={`day-enter cursor-pointer overflow-hidden rounded-3xl border bg-ivory/50 transition-all ${
+      className={`glass day-enter cursor-pointer overflow-hidden rounded-3xl transition-all ${
         active
-          ? "border-clay shadow-soft ring-1 ring-clay/30"
-          : "border-line hover:border-clay-soft"
+          ? "!border-clay ring-1 ring-clay/30"
+          : "hover:!border-clay-soft"
       }`}
       style={{ ["--i"]: day.day_index - 1 } as React.CSSProperties}
     >

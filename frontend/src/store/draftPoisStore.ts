@@ -30,6 +30,8 @@ interface DraftPoisState {
   candidatesCache: Record<string, CachedCandidates>;
   setCity: (c: string) => void;
   setCandidates: (pois: POI[], degraded: boolean, cacheKey?: string) => void;
+  // 仅写缓存、不触碰可见列表：用于后台预取「非当前类目」。
+  cacheCandidates: (cacheKey: string, pois: POI[], degraded: boolean) => void;
   getCached: (cacheKey: string) => CachedCandidates | undefined;
   showCached: (cached: CachedCandidates) => void;
   setLoading: (loading: boolean) => void;
@@ -64,6 +66,10 @@ export const useDraftPoisStore = create<DraftPoisState>()(
         if (cacheKey && !degraded) {
           state.candidatesCache[cacheKey] = { pois, degraded };
         }
+      }),
+    cacheCandidates: (cacheKey, pois, degraded) =>
+      set((state) => {
+        if (!degraded) state.candidatesCache[cacheKey] = { pois, degraded };
       }),
     getCached: (cacheKey) => get().candidatesCache[cacheKey],
     showCached: (cached) =>

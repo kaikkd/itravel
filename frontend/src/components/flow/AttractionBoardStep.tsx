@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowRight,
@@ -36,6 +36,7 @@ export default function AttractionBoardStep() {
     degraded,
     setCity,
     setCandidates,
+    cacheCandidates,
     getCached,
     showCached,
     setLoading,
@@ -47,32 +48,61 @@ export default function AttractionBoardStep() {
   const [keyword, setKeyword] = useState("");
   const [leaving, setLeaving] = useState(false);
 
+  // 异步回来时据「当前所处类目/关键词」决定是否刷新可见列表，避免竞态覆盖。
+  const categoryRef = useRef(category);
+  categoryRef.current = category;
+  const keywordRef = useRef(keyword);
+  keywordRef.current = keyword;
+  // 同 key 的在途请求去重：可见加载与后台预取互不重复发车。
+  const inflightRef = useRef<Set<string>>(new Set());
+
   // 进入时同步城市并拉候选。
   useEffect(() => {
     if (routeCity && city !== routeCity) setCity(routeCity);
   }, [routeCity, city, setCity]);
 
-  // forceRefresh=true 跳过缓存（「换一批」用）。
-  function loadCandidates(cat: Category, kw: string, forceRefresh = false) {
+  // 拉某类目候选：命中缓存秒开；在途则等待；force=true 跳过缓存（「换一批」）。
+  // 命中当前可见类目+关键词才刷新列表，否则只写缓存（后台预取）。
+  function ensureCandidates(cat: Category, kw: string, force = false) {
     if (!routeCity) return;
     const cacheKey = `${routeCity}|${cat}|${kw}`;
-    if (!forceRefresh) {
+    const isVisible = () =>
+      categoryRef.current === cat && keywordRef.current === kw;
+    if (!force) {
       const cached = getCached(cacheKey);
       if (cached) {
-        showCached(cached); // 命中缓存：直接展示，不请求
+        if (isVisible()) showCached(cached);
+        return;
+      }
+      if (inflightRef.current.has(cacheKey)) {
+        if (isVisible()) setLoading(true);
         return;
       }
     }
-    setLoading(true);
+    inflightRef.current.add(cacheKey);
+    if (isVisible()) setLoading(true);
     fetchCandidates(routeCity, { category: cat, keyword: kw, limit: 8 })
-      .then((r) => setCandidates(r.pois, r.degraded, cacheKey))
-      .catch(() => setCandidates([], true));
+      .then((r) => {
+        if (isVisible()) setCandidates(r.pois, r.degraded, cacheKey);
+        else cacheCandidates(cacheKey, r.pois, r.degraded);
+      })
+      .catch(() => {
+        if (isVisible()) setCandidates([], true);
+      })
+      .finally(() => inflightRef.current.delete(cacheKey));
   }
 
+  // 显示当前类目（挂载 / 切类目都走这里，命中缓存秒开）。
   useEffect(() => {
-    loadCandidates(category, "");
+    ensureCandidates(category, "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeCity, category]);
+
+  // 进入页面即并发预取「景点 + 美食」，切到美食时秒开，不必等点了才请求。
+  useEffect(() => {
+    for (const { key } of CATS) ensureCandidates(key, "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeCity]);
 
   const selectedNames = new Set(items.map((it) => it.poi.name));
 
@@ -105,7 +135,10 @@ export default function AttractionBoardStep() {
               {CATS.map(({ key, label, icon: Icon }) => (
                 <button
                   key={key}
-                  onClick={() => setCategory(key)}
+                  onClick={() => {
+                    setCategory(key);
+                    setKeyword("");
+                  }}
                   className={`flex items-center gap-1 rounded-full px-3.5 py-1.5 text-sm font-semibold transition-all ${
                     category === key ? "bg-surface text-clay shadow-soft" : "text-stone"
                   }`}
@@ -116,7 +149,7 @@ export default function AttractionBoardStep() {
               ))}
             </div>
             <button
-              onClick={() => loadCandidates(category, keyword, true)}
+              onClick={() => ensureCandidates(category, keyword, true)}
               title="换一批"
               className="flex h-9 w-9 items-center justify-center rounded-full border border-line text-stone transition-colors hover:border-clay hover:text-clay"
             >
@@ -129,7 +162,7 @@ export default function AttractionBoardStep() {
             <input
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && loadCandidates(category, keyword)}
+              onKeyDown={(e) => e.key === "Enter" && ensureCandidates(category, keyword)}
               placeholder="想要的关键词，如 古迹 / 文艺 / 网红，回车搜索"
               className="h-11 w-full rounded-full border border-line bg-ivory pl-10 pr-4 text-sm outline-none focus:border-clay"
             />

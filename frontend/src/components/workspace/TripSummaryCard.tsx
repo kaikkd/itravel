@@ -89,7 +89,7 @@ function Stat({
 }) {
   return (
     <div
-      className="summary-rise rounded-2xl border border-line bg-surface p-3 text-center"
+      className="glass summary-rise rounded-2xl p-3 text-center"
       style={{ ["--i" as string]: i }}
     >
       <Icon className="mx-auto h-4 w-4 text-clay" />
@@ -160,7 +160,7 @@ export default function TripSummaryCard() {
 
       {/* 已选交通 */}
       <div
-        className="summary-rise space-y-4 rounded-3xl border border-line bg-ivory/50 p-5"
+        className="glass summary-rise space-y-4 rounded-3xl p-5"
         style={{ ["--i" as string]: 4 }}
       >
         <h3 className="font-serif text-base font-semibold text-ink">已选大交通</h3>
