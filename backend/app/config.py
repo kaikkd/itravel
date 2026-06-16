@@ -17,6 +17,17 @@ class Settings(BaseSettings):
     openai_api_version: str = "2024-02-01"
     tt_logid: str = ""  # 可选；为空时每请求自动生成 uuid4
 
+    # 推理参数（可选）：DeepSeek / GPT-5 等推理模型才需要，普通模型留空即不发送。
+    # reasoning_effort: minimal / low / medium / high。
+    openai_reasoning_effort: str = ""
+    # DeepSeek 思考模式（三态字符串）：
+    #   enabled  → 透传 extra_body={"thinking": {"type": "enabled"}}
+    #   disabled → 透传 {"type": "disabled"}（关键：deepseek-v4 等默认开思考，
+    #              只省略该参数仍会先生成思维链，导致首个正文 token 延迟数秒～十几秒）
+    #   留空     → 不发送，交给模型默认
+    # 兼容 true/false：true→enabled，false→disabled。
+    openai_thinking: str = ""
+
     # 高德（M0 预留）
     amap_key: str = ""
 

@@ -29,10 +29,36 @@ def build_client() -> OpenAI | AzureOpenAI:
 
     if not settings.openai_base_url:
         raise LLMNotConfigured("未配置 AZURE_ENDPOINT 或 OPENAI_BASE_URL")
+    # 标准 OpenAI 兼容端点（如 DeepSeek base_url=https://api.deepseek.com）。
     return OpenAI(
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
     )
+
+
+_THINKING_ON = {"enabled", "on", "true", "1", "yes"}
+_THINKING_OFF = {"disabled", "off", "false", "0", "no"}
+
+
+def _reasoning_kwargs() -> dict:
+    """按 env 注入推理参数；普通模型留空即不发送，对各供应商无副作用。
+
+    - reasoning_effort: OpenAI / DeepSeek 通用的推理力度（minimal/low/medium/high）。
+    - thinking: DeepSeek 思考模式。关键点——deepseek-v4 等模型「默认开思考」，
+      只省略该参数仍会先吐思维链（被我们丢弃），首个正文 token 延迟数秒～十几秒；
+      因此关闭时必须**显式**发送 {"type": "disabled"}，而非省略。
+      仅对非 Azure（标准 OpenAI 兼容，如 DeepSeek）端点发送，避免 Azure 因未知字段 400。
+    """
+    kwargs: dict = {}
+    if settings.openai_reasoning_effort:
+        kwargs["reasoning_effort"] = settings.openai_reasoning_effort
+    if not settings.azure_endpoint:
+        mode = settings.openai_thinking.strip().lower()
+        if mode in _THINKING_ON:
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+        elif mode in _THINKING_OFF:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+    return kwargs
 
 
 def stream_chat(
@@ -49,10 +75,13 @@ def stream_chat(
         messages=messages,  # type: ignore[arg-type]
         max_tokens=max_tokens,
         stream=True,
+        **_reasoning_kwargs(),
     )
     for chunk in stream:
         if not chunk.choices:
             continue
         delta = chunk.choices[0].delta
+        # 只取正文；DeepSeek 思考模式的 reasoning_content（思维链）在此主动丢弃，
+        # 避免污染下游 JSON 解析。
         if delta and delta.content:
             yield delta.content

@@ -1,6 +1,6 @@
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 from app import amap_stub, llm, validators, workflow
 from app.schemas import ItineraryCreate
@@ -12,12 +12,8 @@ def sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def synth_tree(draft: ItineraryCreate) -> dict:
-    """Build frontend Itinerary shape with synthetic negative ids.
-
-    Planning drafts intentionally do not hit the database; explicit save binds
-    the tree to the logged-in user later.
-    """
+def _id_counter() -> Callable[[], int]:
+    """递减负数 id 生成器，区别于后端正 id；流式期间跨天共享以保证唯一。"""
     cid = -1
 
     def nid() -> int:
@@ -26,67 +22,77 @@ def synth_tree(draft: ItineraryCreate) -> dict:
         cid -= 1
         return value
 
-    days = []
-    for day_in in draft.days:
-        order_to_stop_id: dict[int, int] = {}
-        stops = []
-        for stop_in in day_in.stops:
-            stop_id = nid()
-            order_to_stop_id[stop_in.order_index] = stop_id
-            stops.append(
-                {
-                    "id": stop_id,
-                    "order_index": stop_in.order_index,
-                    "arrive_time": stop_in.arrive_time,
-                    "stay_minutes": stop_in.stay_minutes,
-                    "poi": {
-                        "id": nid(),
-                        "amap_id": stop_in.poi.amap_id,
-                        "name": stop_in.poi.name,
-                        "category": stop_in.poi.category,
-                        "lng": stop_in.poi.lng,
-                        "lat": stop_in.poi.lat,
-                        "address": stop_in.poi.address,
-                        "rec_reason": stop_in.poi.rec_reason,
-                        "sources": [
-                            {"id": nid(), "url": src.url, "summary": src.summary}
-                            for src in stop_in.poi.sources
-                        ],
-                    },
-                }
-            )
-        transits = []
-        for transit_in in day_in.transits:
-            from_stop_id = order_to_stop_id.get(transit_in.from_order_index)
-            to_stop_id = order_to_stop_id.get(transit_in.to_order_index)
-            if from_stop_id is None or to_stop_id is None:
-                logger.warning(
-                    "skip_invalid_transit draft_day=%s from_order=%s to_order=%s",
-                    day_in.day_index,
-                    transit_in.from_order_index,
-                    transit_in.to_order_index,
-                )
-                continue
-            transits.append(
-                {
-                    "id": nid(),
-                    "from_stop_id": from_stop_id,
-                    "to_stop_id": to_stop_id,
-                    "mode": transit_in.mode,
-                    "duration_seconds": transit_in.duration_seconds,
-                    "distance_meters": transit_in.distance_meters,
-                    "polyline": transit_in.polyline,
-                }
-            )
-        days.append(
+    return nid
+
+
+def _synth_day(day_in, nid: Callable[[], int]) -> dict:
+    """单天 DayCreate → 前端 day 树（合成负 id，transit 引用本天 stop id）。"""
+    order_to_stop_id: dict[int, int] = {}
+    stops = []
+    for stop_in in day_in.stops:
+        stop_id = nid()
+        order_to_stop_id[stop_in.order_index] = stop_id
+        stops.append(
             {
-                "id": nid(),
-                "day_index": day_in.day_index,
-                "stops": stops,
-                "transits": transits,
+                "id": stop_id,
+                "order_index": stop_in.order_index,
+                "arrive_time": stop_in.arrive_time,
+                "stay_minutes": stop_in.stay_minutes,
+                "poi": {
+                    "id": nid(),
+                    "amap_id": stop_in.poi.amap_id,
+                    "name": stop_in.poi.name,
+                    "category": stop_in.poi.category,
+                    "lng": stop_in.poi.lng,
+                    "lat": stop_in.poi.lat,
+                    "address": stop_in.poi.address,
+                    "rec_reason": stop_in.poi.rec_reason,
+                    "sources": [
+                        {"id": nid(), "url": src.url, "summary": src.summary}
+                        for src in stop_in.poi.sources
+                    ],
+                },
             }
         )
+    transits = []
+    for transit_in in day_in.transits:
+        from_stop_id = order_to_stop_id.get(transit_in.from_order_index)
+        to_stop_id = order_to_stop_id.get(transit_in.to_order_index)
+        if from_stop_id is None or to_stop_id is None:
+            logger.warning(
+                "skip_invalid_transit draft_day=%s from_order=%s to_order=%s",
+                day_in.day_index,
+                transit_in.from_order_index,
+                transit_in.to_order_index,
+            )
+            continue
+        transits.append(
+            {
+                "id": nid(),
+                "from_stop_id": from_stop_id,
+                "to_stop_id": to_stop_id,
+                "mode": transit_in.mode,
+                "duration_seconds": transit_in.duration_seconds,
+                "distance_meters": transit_in.distance_meters,
+                "polyline": transit_in.polyline,
+            }
+        )
+    return {
+        "id": nid(),
+        "day_index": day_in.day_index,
+        "stops": stops,
+        "transits": transits,
+    }
 
+
+def synth_tree(draft: ItineraryCreate) -> dict:
+    """Build frontend Itinerary shape with synthetic negative ids.
+
+    Planning drafts intentionally do not hit the database; explicit save binds
+    the tree to the logged-in user later.
+    """
+    nid = _id_counter()
+    days = [_synth_day(day_in, nid) for day_in in draft.days]
     return {
         "id": nid(),
         "user_id": None,
@@ -131,10 +137,100 @@ def _skeleton_for(city: str, day_count: int) -> dict:
     }
 
 
+def _success_reply(intent: workflow.Intent, day_n: int | None = None) -> str:
+    n = day_n if day_n is not None else intent.day_count
+    return f"已为你排好「{intent.city}」{n} 天的行程，含吃住玩，左侧可微调。"
+
+
+def _degraded_reply(intent: workflow.Intent) -> str:
+    return f"AI 暂不可用，先用「{intent.city}」热门地点为你拼了行程，可在左侧调整。"
+
+
+def _finish_tree(intent: workflow.Intent, synth_days: list[dict], nid: Callable[[], int]) -> dict:
+    """把已逐天合成的 day 列表收口成整树（复用同一批 day 与共享 id）。"""
+    return {
+        "id": nid(),
+        "user_id": None,
+        "title": f"{intent.city}{intent.day_count}日游",
+        "city": intent.city,
+        "status": "draft",
+        "day_count": max(len(synth_days), 1),
+        "days": synth_days,
+    }
+
+
+def _stream_default(req, intent: workflow.Intent) -> Iterator[str]:
+    """默认（day_count）路径：边流式边按天下发，第一天约数秒即可出现。"""
+    yield sse("skeleton", _skeleton(intent))
+    yield sse("status", {"text": "AI 规划中…"})
+
+    nid = _id_counter()
+    synth_days: list[dict] = []
+    reply_done = False
+
+    def emit_day(day_plan) -> str:
+        ordered = workflow.order_day_stops(day_plan)
+        day_tree = _synth_day(workflow.assemble_day(ordered), nid)
+        synth_days.append(day_tree)
+        return sse("day", day_tree)
+
+    for kind, payload in workflow.stream_plan_days(req):
+        if kind == "reply":
+            yield sse("reply", {"text": _clip_reply(payload, _success_reply(intent))})
+            reply_done = True
+        elif kind == "day":
+            yield emit_day(payload)
+        elif kind == "end":
+            if synth_days:
+                break
+            # 流式未产出任何天：用全量解析救回的天，或退到高德桩。
+            recovered = payload.get("fallback_days") or []
+            degraded = not recovered
+            days = recovered or workflow._fallback_plan(intent)
+            if degraded:
+                logger.info("plan_degraded reason=llm_unavailable_or_invalid city=%s", intent.city)
+                yield sse("degraded", {"reason": "llm_unavailable_or_invalid"})
+            if not reply_done:
+                fb = _degraded_reply(intent) if degraded else _success_reply(intent)
+                yield sse("reply", {"text": _clip_reply(payload.get("reply"), fb)})
+                reply_done = True
+            for d in days:
+                yield emit_day(d)
+
+    yield sse("itinerary", _finish_tree(intent, synth_days, nid))
+    yield sse("done", {"itinerary_id": None})
+
+
+def _stream_from_pois(req, intent: workflow.Intent) -> Iterator[str]:
+    """route_first（poi_list）路径：需先估天数再发骨架，沿用缓冲式规划。"""
+    yield sse("status", {"text": "AI 估算天数并编排…"})
+    try:
+        days, est_days, degraded = workflow.recommend_plan_from_pois(req)
+    except Exception:
+        logger.exception("plan_from_pois_failed city=%s", intent.city)
+        days, est_days = workflow._fallback_plan_from_pois(req, intent)
+        degraded = True
+    yield sse("estimate", {"day_count": est_days})
+    yield sse("skeleton", _skeleton_for(intent.city, max(len(days), 1)))
+    if degraded:
+        logger.info("plan_degraded reason=llm_unavailable_or_invalid city=%s", intent.city)
+        yield sse("degraded", {"reason": "llm_unavailable_or_invalid"})
+
+    ordered = [workflow.order_day_stops(d) for d in days]
+    tree = synth_tree(workflow.assemble_draft(req, ordered))
+    llm_reply = getattr(days[0], "_reply", None) if days else None
+    fallback = _degraded_reply(intent) if degraded else _success_reply(intent, len(tree["days"]))
+    yield sse("reply", {"text": _clip_reply(llm_reply, fallback)})
+    for day in tree["days"]:
+        yield sse("day", day)
+    yield sse("itinerary", tree)
+    yield sse("done", {"itinerary_id": None})
+
+
 def stream_plan_events(req) -> Iterator[str]:
     """每日全景时间轴流式规划。req 为 PlanStreamIn。
 
-    plan_source=day_count（默认）：按指定天数规划。
+    plan_source=day_count（默认）：按指定天数规划，按天渐进下发。
     plan_source=poi_list：基于用户已选 POI + 节奏，先让 LLM 估天数再排程（#11）。
     """
     from_pois = getattr(req, "plan_source", "day_count") == "poi_list"
@@ -150,46 +246,9 @@ def stream_plan_events(req) -> Iterator[str]:
     )
 
     if from_pois:
-        # 天数未知，先规划拿到估算天数，再据此发骨架。
-        yield sse("status", {"text": "AI 估算天数并编排…"})
-        try:
-            days, est_days, degraded = workflow.recommend_plan_from_pois(req)
-        except Exception:
-            logger.exception("plan_from_pois_failed city=%s", intent.city)
-            days, est_days = workflow._fallback_plan_from_pois(req, intent)
-            degraded = True
-        yield sse("estimate", {"day_count": est_days})
-        yield sse("skeleton", _skeleton_for(intent.city, max(len(days), 1)))
+        yield from _stream_from_pois(req, intent)
     else:
-        yield sse("skeleton", _skeleton(intent))
-        yield sse("status", {"text": "AI 规划中…"})
-        try:
-            days, degraded = workflow.recommend_plan(req)
-        except Exception:
-            logger.exception("plan_recommend_failed city=%s", intent.city)
-            days, degraded = workflow._fallback_plan(intent), True
-
-    if degraded:
-        logger.info("plan_degraded reason=llm_unavailable_or_invalid city=%s", intent.city)
-        yield sse("degraded", {"reason": "llm_unavailable_or_invalid"})
-
-    ordered = [workflow.order_day_stops(d) for d in days]
-    draft = workflow.assemble_draft(req, ordered)
-    tree = synth_tree(draft)
-
-    llm_reply = getattr(days[0], "_reply", None) if days else None
-    day_n = len(tree["days"])
-    fallback_reply = (
-        f"AI 暂不可用，先用「{intent.city}」热门地点为你拼了行程，可在左侧调整。"
-        if degraded
-        else f"已为你排好「{intent.city}」{day_n} 天的行程，含吃住玩，左侧可微调。"
-    )
-    yield sse("reply", {"text": _clip_reply(llm_reply, fallback_reply)})
-
-    for day in tree["days"]:
-        yield sse("day", day)
-    yield sse("itinerary", tree)
-    yield sse("done", {"itinerary_id": None})
+        yield from _stream_default(req, intent)
 
 
 # ---- 景点候选（route_first 选景点板，#11）----
