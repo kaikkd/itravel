@@ -2,7 +2,8 @@ import json
 import logging
 from collections.abc import Callable, Iterator
 
-from app import amap_stub, llm, validators, workflow
+from app import llm, validators, workflow
+from app.services import amap_service
 from app.schemas import ItineraryCreate
 
 logger = logging.getLogger(__name__)
@@ -258,6 +259,7 @@ _CATEGORY_CN = {"eat": "餐饮美食", "stay": "酒店住宿", "play": "景点/�
 
 def _poi_out(p) -> dict:
     return {
+        "amap_id": p.amap_id,
         "name": p.name,
         "category": p.category,
         "lng": p.lng,
@@ -299,8 +301,13 @@ def candidate_pois(
             return {"pois": [_poi_out(p) for p in pois[:limit]], "degraded": False}
     except Exception:
         logger.info("candidates_degraded city=%s category=%s", city, category)
-    stub = amap_stub.candidates(city, category or "play", limit=limit)
-    return {"pois": [_poi_out(p) for p in stub], "degraded": True}
+    result = amap_service.candidates(
+        city,
+        category or "play",
+        keyword=keyword,
+        limit=limit,
+    )
+    return {"pois": [_poi_out(p) for p in result.pois], "degraded": result.degraded}
 
 
 # ---- 候选城市（route_first path B 选城，#11）----

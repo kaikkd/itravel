@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # 兼容 true/false：true→enabled，false→disabled。
     openai_thinking: str = ""
 
-    # 高德（M0 预留）
+    # 高德 Web 服务 Key（可选）：未配置时 POI / 交通服务自动走本地兜底。
     amap_key: str = ""
 
     jwt_secret: str = "dev-only-change-me"
