@@ -48,7 +48,14 @@ _ROLE_ALIASES: dict[str, StopRole] = {
 }
 
 
-def _normalize_role(stop: RouteStop) -> tuple[StopRole, RouteSortWarning | None]:
+def normalize_stop_role(stop: RouteStop) -> tuple[StopRole, RouteSortWarning | None]:
+    """Normalize Chinese/English stop slots into canonical route roles.
+
+    Example:
+        >>> stop = RouteStop(slot="景点", poi=ToolPOI(name="宽窄巷子", category="play"))
+        >>> normalize_stop_role(stop)[0]
+        'attraction'
+    """
     slot_key = (stop.slot or "").strip().lower()
     category = stop.poi.category
     if slot_key in _ROLE_ALIASES:
@@ -57,6 +64,7 @@ def _normalize_role(stop: RouteStop) -> tuple[StopRole, RouteSortWarning | None]
     if category == "play":
         return "attraction", RouteSortWarning(
             code="category_role_fallback",
+            severity="info",
             stop_name=stop.poi.name,
             slot=stop.slot,
             category=category,
@@ -65,6 +73,7 @@ def _normalize_role(stop: RouteStop) -> tuple[StopRole, RouteSortWarning | None]
     if category == "stay":
         return "hotel", RouteSortWarning(
             code="category_role_fallback",
+            severity="info",
             stop_name=stop.poi.name,
             slot=stop.slot,
             category=category,
@@ -81,6 +90,7 @@ def _normalize_role(stop: RouteStop) -> tuple[StopRole, RouteSortWarning | None]
 
     return "unknown", RouteSortWarning(
         code="unknown_role",
+        severity="error",
         stop_name=stop.poi.name,
         slot=stop.slot,
         category=category,
@@ -148,7 +158,8 @@ def route_sort_day(
 
     Input slots may use canonical English values or common Chinese aliases.
     The algorithm works on normalized roles and returns warnings for fallback
-    decisions that an agent harness may want to inspect.
+    decisions that an agent harness may want to inspect. It does not assign
+    meal times; callers should provide breakfast/lunch/dinner roles explicitly.
     """
     original = list(stops)
     warnings: list[RouteSortWarning] = []
@@ -161,7 +172,7 @@ def route_sort_day(
         "unknown": [],
     }
     for stop in original:
-        role, warning = _normalize_role(stop)
+        role, warning = normalize_stop_role(stop)
         grouped[role].append(stop)
         if warning is not None:
             warnings.append(warning)
@@ -195,6 +206,6 @@ def route_sort_day(
 
     return RouteSortResult(
         stops=ordered,
-        degraded=bool(warnings),
+        degraded=any(w.severity in ("warning", "error") for w in warnings),
         warnings=warnings,
     )

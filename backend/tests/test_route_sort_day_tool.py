@@ -1,12 +1,11 @@
-from app.schemas import POICreate
-from app.tools.schemas import RouteStop
-from app.tools.route_sort_day import route_sort_day
+from app.tools.schemas import RouteStop, ToolPOI
+from app.tools.route_sort_day import normalize_stop_role, route_sort_day
 
 
 def _stop(name: str, slot: str, category: str, lng=None, lat=None) -> RouteStop:
     return RouteStop(
         slot=slot,
-        poi=POICreate(name=name, category=category, lng=lng, lat=lat),
+        poi=ToolPOI(name=name, category=category, lng=lng, lat=lat),
     )
 
 
@@ -48,7 +47,9 @@ def test_route_sort_day_puts_missing_coordinates_after_sortable_attractions():
     ordered = route_sort_day(stops, start_lng=104.0, start_lat=30.65)
 
     assert ordered.degraded is True
-    assert [w.code for w in ordered.warnings] == ["missing_coordinates"]
+    assert [(w.code, w.severity) for w in ordered.warnings] == [
+        ("missing_coordinates", "warning")
+    ]
     assert [s.poi.name for s in ordered.stops] == [
         "早餐",
         "近景点",
@@ -109,10 +110,10 @@ def test_route_sort_day_falls_back_from_category_without_guessing_meal_slots():
         "空 slot 酒店",
         "空 slot 餐厅",
     ]
-    assert [w.code for w in ordered.warnings] == [
-        "category_role_fallback",
-        "category_role_fallback",
-        "ambiguous_meal_role",
+    assert [(w.code, w.severity) for w in ordered.warnings] == [
+        ("category_role_fallback", "info"),
+        ("category_role_fallback", "info"),
+        ("ambiguous_meal_role", "warning"),
     ]
 
 
@@ -125,8 +126,30 @@ def test_route_sort_day_warns_when_inferring_role_from_unknown_slot():
 
     ordered = route_sort_day(stops, start_lng=104.0, start_lat=30.65)
 
-    assert ordered.degraded is True
+    assert ordered.degraded is False
     assert [s.poi.name for s in ordered.stops] == ["早餐", "景点", "未知活动"]
-    assert [(w.code, w.stop_name) for w in ordered.warnings] == [
-        ("category_role_fallback", "未知活动")
+    assert [(w.code, w.severity, w.stop_name) for w in ordered.warnings] == [
+        ("category_role_fallback", "info", "未知活动")
     ]
+
+
+def test_normalize_stop_role_is_public_and_returns_warning_severity():
+    role, warning = normalize_stop_role(_stop("随便逛", "自由活动", "play"))
+
+    assert role == "attraction"
+    assert warning is not None
+    assert warning.code == "category_role_fallback"
+    assert warning.severity == "info"
+
+
+def test_route_sort_day_marks_unknown_role_as_error():
+    unknown = RouteStop(
+        slot="自由活动",
+        poi=ToolPOI(name="未知地点", category="other", lng=104.03, lat=30.65),
+    )
+
+    ordered = route_sort_day([unknown], start_lng=104.0, start_lat=30.65)
+
+    assert ordered.degraded is True
+    assert ordered.warnings[0].code == "unknown_role"
+    assert ordered.warnings[0].severity == "error"
