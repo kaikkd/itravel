@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from pathlib import Path
 
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -14,10 +15,22 @@ connect_args = (
 engine = create_engine(settings.database_url, echo=False, connect_args=connect_args)
 
 
+def _ensure_sqlite_parent_dir() -> None:
+    if not engine.url.drivername.startswith("sqlite"):
+        return
+    database = engine.url.database
+    if not database or database == ":memory:":
+        return
+    path = Path(database)
+    if path.parent != Path("."):
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+
 def init_db() -> None:
     # 导入 models 以注册到 SQLModel.metadata
     import app.models  # noqa: F401
 
+    _ensure_sqlite_parent_dir()
     SQLModel.metadata.create_all(engine)
 
 
