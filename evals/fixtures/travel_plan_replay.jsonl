@@ -1,0 +1,2 @@
+{"id":"complete_chengdu","degraded":false,"tool_warnings":[],"days":[{"day_index":1,"stops":[{"poi":{"name":"早餐店","category":"eat","lng":104.07,"lat":30.67}},{"poi":{"name":"武侯祠","category":"play","lng":104.05,"lat":30.65}},{"poi":{"name":"酒店","category":"stay","lng":104.08,"lat":30.66}}]}]}
+{"id":"missing_coord_degraded","degraded":true,"tool_warnings":[{"code":"missing_coordinates"}],"days":[{"day_index":1,"stops":[{"poi":{"name":"未知景点","category":"play","lng":null,"lat":null}}]}]}
