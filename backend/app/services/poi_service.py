@@ -1,6 +1,7 @@
 import logging
 
-from app import amap_stub, llm, validators, workflow
+from app import llm, validators, workflow
+from app.services import amap_service
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ def build_category_prompt(city: str, category: str, exclude: list[str]) -> list[
 def poi_dicts(pois) -> list[dict]:
     return [
         {
+            "amap_id": p.amap_id,
             "name": p.name,
             "category": p.category,
             "lng": p.lng,
@@ -64,7 +66,8 @@ def regenerate_llm(city: str, category: str, exclude: list[str]) -> tuple[list, 
             logger.exception("poi_regenerate_failed city=%s category=%s", city, category)
             break
     logger.info("poi_degraded city=%s category=%s", city, category)
-    return amap_stub.candidates(city, category, exclude=exclude_set), True
+    result = amap_service.candidates(city, category, exclude=exclude_set)
+    return result.pois, result.degraded
 
 
 def get_candidates(
@@ -80,8 +83,7 @@ def get_candidates(
     if regenerate:
         pois, degraded = regenerate_llm(city, category, exclude_items)
     else:
-        pois, degraded = amap_stub.candidates(
-            city, category, exclude=set(exclude_items)
-        ), False
+        result = amap_service.candidates(city, category, exclude=set(exclude_items))
+        pois, degraded = result.pois, result.degraded
 
     return {"pois": poi_dicts(pois), "degraded": degraded}
