@@ -11,6 +11,8 @@ if str(BACKEND) not in sys.path:
     # evals 位于仓库根目录，直接运行脚本时需要把 backend 加进 import path。
     sys.path.insert(0, str(BACKEND))
 
+from app import validators  # noqa: E402
+
 
 def evaluate_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [_evaluate_record(record) for record in records]
@@ -77,12 +79,17 @@ def _evaluate_record(record: dict[str, Any]) -> dict[str, Any]:
         for stop in stops
         if _poi(stop).get("lng") is None or _poi(stop).get("lat") is None
     ]
+    redacted_summary = (
+        record.get("result", {}).get("state", {}).get("summary", {})
+    )
+    stop_count = redacted_summary.get("sorted_stop_count", len(stops))
+    missing_coord_count = redacted_summary.get("missing_coord_count", len(missing))
     return {
         "id": record.get("id", ""),
-        "compliant": bool(record.get("days")) or bool(stops),
+        "compliant": _record_compliant(record),
         "degraded": bool(record.get("degraded")),
-        "stop_count": len(stops),
-        "missing_coord_count": len(missing),
+        "stop_count": stop_count,
+        "missing_coord_count": missing_coord_count,
         "tool_warning_count": _warning_count(record),
     }
 
@@ -112,18 +119,26 @@ def _run_live_case(query: str, destination: str = "", days: int = 0) -> dict[str
 
 
 def _day_plan_to_record(day) -> dict[str, Any]:
+    from app import workflow
+
+    ordered = workflow.order_day_stops(day)
+    assembled = workflow.assemble_day(ordered)
     stops = []
-    for idx, stop in enumerate(day.stops, start=1):
+    for plan_stop, stop in zip(ordered.stops, assembled.stops):
         stops.append(
             {
-                "order_index": idx,
-                "slot": stop.slot,
+                "order_index": stop.order_index,
+                "slot": plan_stop.slot,
                 "arrive_time": stop.arrive_time,
                 "stay_minutes": stop.stay_minutes,
                 "poi": stop.poi.model_dump(),
             }
         )
-    return {"day_index": day.day_index, "stops": stops}
+    return {
+        "day_index": ordered.day_index,
+        "stops": stops,
+        "transits": [item.model_dump(mode="json") for item in assembled.transits],
+    }
 
 
 def _collect_stops(record: dict[str, Any]) -> list[dict[str, Any]]:
@@ -150,6 +165,78 @@ def _warning_count(record: dict[str, Any]) -> int:
     if record.get("warnings"):
         return len(record["warnings"])
     return 0
+
+
+def _record_compliant(record: dict[str, Any]) -> bool:
+    # agent harness 已执行统一 validator 时，以该结果为准；缺少 validator
+    # 的中间记录不能仅凭“有 stops”就算合规。
+    state = record.get("result", {}).get("state") or record.get("state") or {}
+    validation = state.get("validation") if isinstance(state, dict) else None
+    if isinstance(validation, dict) and "valid" in validation:
+        return validation.get("valid") is True
+    if isinstance(state, dict) and state.get("sorted_stops"):
+        return False
+
+    days = record.get("days") or []
+    return bool(days) and all(_workflow_day_compliant(day) for day in days)
+
+
+def _workflow_day_compliant(day: dict[str, Any]) -> bool:
+    stops = day.get("stops") or []
+    if not stops:
+        return False
+
+    roles: set[str] = set()
+    previous_time = -1
+    for stop in stops:
+        poi = _poi(stop)
+        if not validators.valid_category(poi.get("category")):
+            return False
+        if not validators.valid_coord(poi.get("lng"), poi.get("lat")):
+            return False
+
+        slot = stop.get("slot")
+        if slot not in validators.VALID_SLOTS:
+            return False
+        if validators.SLOT_TO_CATEGORY[slot] != poi.get("category"):
+            return False
+        roles.add(slot)
+
+        arrive_time = validators.validate_arrive_time(stop.get("arrive_time"))
+        stay_minutes = validators.validate_stay_minutes(stop.get("stay_minutes"))
+        if arrive_time is None or stay_minutes is None:
+            return False
+        current_time = _hhmm_to_minutes(arrive_time)
+        if current_time <= previous_time:
+            return False
+        previous_time = current_time
+
+    required = {"breakfast", "lunch", "dinner", "attraction", "hotel"}
+    if not required <= roles:
+        return False
+
+    transits = day.get("transits") or []
+    if len(transits) != len(stops) - 1:
+        return False
+    for index, segment in enumerate(transits, start=1):
+        if segment.get("from_order_index") != index:
+            return False
+        if segment.get("to_order_index") != index + 1:
+            return False
+        if segment.get("mode") not in {"walking", "driving"}:
+            return False
+        distance = segment.get("distance_meters")
+        duration = segment.get("duration_seconds")
+        if not isinstance(distance, int) or distance < 0:
+            return False
+        if not isinstance(duration, int) or duration < 0:
+            return False
+    return True
+
+
+def _hhmm_to_minutes(value: str) -> int:
+    hour, minute = value.split(":", 1)
+    return int(hour) * 60 + int(minute)
 
 
 if __name__ == "__main__":

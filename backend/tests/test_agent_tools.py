@@ -128,3 +128,89 @@ def test_validate_itinerary_tool_uses_explicit_stop_slots_for_day_structure():
     assert result.ok is True
     assert result.degraded is False
     assert result.data["valid"] is True
+
+
+def test_validate_itinerary_tool_warns_on_invalid_time_and_stay_minutes():
+    result = _call(
+        "validate_itinerary",
+        {
+            "itinerary": {
+                "title": "测试",
+                "city": "成都",
+                "status": "draft",
+                "days": [
+                    {
+                        "day_index": 1,
+                        "stops": [
+                            {
+                                "order_index": 1,
+                                "slot": "breakfast",
+                                "arrive_time": "99:99",
+                                "stay_minutes": 9999,
+                                "poi": {"name": "早餐", "category": "eat", "lng": 104.0, "lat": 30.6},
+                            },
+                            {
+                                "order_index": 2,
+                                "slot": "attraction",
+                                "arrive_time": "10:00",
+                                "stay_minutes": 120,
+                                "poi": {"name": "景点", "category": "play", "lng": 104.1, "lat": 30.7},
+                            },
+                            {
+                                "order_index": 3,
+                                "slot": "lunch",
+                                "arrive_time": "12:00",
+                                "stay_minutes": 60,
+                                "poi": {"name": "午餐", "category": "eat", "lng": 104.2, "lat": 30.8},
+                            },
+                            {
+                                "order_index": 4,
+                                "slot": "dinner",
+                                "arrive_time": "18:30",
+                                "stay_minutes": 75,
+                                "poi": {"name": "晚餐", "category": "eat", "lng": 104.3, "lat": 30.9},
+                            },
+                            {
+                                "order_index": 5,
+                                "slot": "hotel",
+                                "arrive_time": "21:00",
+                                "stay_minutes": 600,
+                                "poi": {"name": "酒店", "category": "stay", "lng": 104.4, "lat": 31.0},
+                            },
+                        ],
+                    }
+                ],
+            }
+        },
+    )
+
+    codes = {warning.code for warning in result.warnings}
+    assert {"invalid_arrive_time", "invalid_stay_minutes"} <= codes
+    assert result.data["valid"] is False
+
+
+def test_validate_itinerary_tool_warns_on_coordinates_outside_china():
+    result = _call(
+        "validate_itinerary",
+        {
+            "itinerary": {
+                "title": "测试",
+                "city": "成都",
+                "days": [
+                    {
+                        "day_index": 1,
+                        "stops": [
+                            {
+                                "order_index": 1,
+                                "slot": "attraction",
+                                "poi": {"name": "越界景点", "category": "play", "lng": 1.0, "lat": 1.0},
+                            }
+                        ],
+                    }
+                ],
+            }
+        },
+    )
+
+    assert any(w.code == "invalid_coordinates" for w in result.warnings)
+    assert result.data["valid"] is False

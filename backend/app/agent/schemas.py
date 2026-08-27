@@ -1,6 +1,6 @@
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 WarningSeverity = Literal["info", "warning", "error"]
@@ -19,6 +19,14 @@ class ToolResult(BaseModel):
     warnings: list[ToolWarning] = Field(default_factory=list)
     degraded: bool = False
     error: str | None = None
+
+    @model_validator(mode="after")
+    def failed_tool_is_always_degraded(self) -> Self:
+        # ok=False 表示工具未完成契约，不能同时被标记为健康结果。
+        # 在模型层建立不变量，避免不同 runner 各自遗漏失败传播。
+        if not self.ok:
+            self.degraded = True
+        return self
 
 
 class ToolCall(BaseModel):

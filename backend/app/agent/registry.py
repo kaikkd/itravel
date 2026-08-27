@@ -1,5 +1,8 @@
+import math
 from collections.abc import Callable
 from typing import Any
+
+from pydantic import ValidationError
 
 from app.agent.schemas import ToolCall, ToolContext, ToolResult, ToolSpec, ToolWarning
 from app.tools.harness_tools import (
@@ -62,8 +65,19 @@ class ToolRegistry:
                     )
                 ],
             )
+        errors = _validate_schema(self._specs[call.name].input_schema, call.args)
+        if errors:
+            return _invalid_tool_args_result(call.name, errors)
         try:
             return handler(call.args, context)
+        except ValidationError as exc:
+            # handler 内部的 Pydantic 模型负责成对坐标等跨字段约束。
+            # 这类异常仍属于调用参数错误，不应被误报为工具内部故障。
+            errors = [
+                f"args.{'.'.join(str(part) for part in item['loc'])}: {item['msg']}"
+                for item in exc.errors(include_url=False)
+            ]
+            return _invalid_tool_args_result(call.name, errors)
         except Exception as exc:
             # tool 内部异常统一包成结构化结果，避免某个工具失败导致 agent
             # 轨迹缺失；真实错误类型仍保留在 error 字段中。
@@ -115,10 +129,10 @@ def build_default_registry() -> ToolRegistry:
         input_schema={
             "type": "object",
             "properties": {
-                "from_lng": {"type": ["number", "null"]},
-                "from_lat": {"type": ["number", "null"]},
-                "to_lng": {"type": ["number", "null"]},
-                "to_lat": {"type": ["number", "null"]},
+                "from_lng": {"type": ["number", "null"], "minimum": 73, "maximum": 135.5},
+                "from_lat": {"type": ["number", "null"], "minimum": 3, "maximum": 53.7},
+                "to_lng": {"type": ["number", "null"], "minimum": 73, "maximum": 135.5},
+                "to_lat": {"type": ["number", "null"], "minimum": 3, "maximum": 53.7},
                 "mode": {"type": "string", "enum": ["driving", "walking"]},
             },
         },
@@ -130,9 +144,52 @@ def build_default_registry() -> ToolRegistry:
         input_schema={
             "type": "object",
             "properties": {
-                "stops": {"type": "array"},
-                "start_lng": {"type": ["number", "null"]},
-                "start_lat": {"type": ["number", "null"]},
+                "stops": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "slot": {"type": "string"},
+                            "arrive_time": {"type": ["string", "null"]},
+                            "stay_minutes": {
+                                "type": ["integer", "null"],
+                                "minimum": 1,
+                            },
+                            "poi": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "category": {
+                                        "type": "string",
+                                        "enum": ["eat", "play", "stay", "other"],
+                                    },
+                                    "lng": {
+                                        "type": ["number", "null"],
+                                        "minimum": 73,
+                                        "maximum": 135.5,
+                                    },
+                                    "lat": {
+                                        "type": ["number", "null"],
+                                        "minimum": 3,
+                                        "maximum": 53.7,
+                                    },
+                                },
+                                "required": ["name", "category"],
+                            },
+                        },
+                        "required": ["poi"],
+                    },
+                },
+                "start_lng": {
+                    "type": ["number", "null"],
+                    "minimum": 73,
+                    "maximum": 135.5,
+                },
+                "start_lat": {
+                    "type": ["number", "null"],
+                    "minimum": 3,
+                    "maximum": 53.7,
+                },
             },
             "required": ["stops"],
         },
@@ -148,3 +205,71 @@ def build_default_registry() -> ToolRegistry:
         },
     )
     return registry
+
+
+def _validate_schema(schema: dict[str, Any], value: Any, path: str = "args") -> list[str]:
+    """校验 registry v0 使用的 JSON Schema 子集，不引入额外运行时依赖。"""
+    if not schema:
+        return []
+    expected = schema.get("type")
+    expected_types = expected if isinstance(expected, list) else [expected]
+    if expected and not any(_matches_type(value, item) for item in expected_types):
+        return [f"{path} must be of type {expected}"]
+    if "enum" in schema and value not in schema["enum"]:
+        return [f"{path} must be one of {schema['enum']}"]
+
+    errors: list[str] = []
+    if isinstance(value, dict):
+        required = schema.get("required", [])
+        for name in required:
+            if name not in value:
+                errors.append(f"{path}.{name} is required")
+        properties = schema.get("properties", {})
+        for name, child in properties.items():
+            if name in value:
+                errors.extend(_validate_schema(child, value[name], f"{path}.{name}"))
+    elif isinstance(value, list) and "items" in schema:
+        for index, item in enumerate(value):
+            errors.extend(_validate_schema(schema["items"], item, f"{path}[{index}]"))
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        if not math.isfinite(value):
+            errors.append(f"{path} must be finite")
+            return errors
+        if "minimum" in schema and value < schema["minimum"]:
+            errors.append(f"{path} must be >= {schema['minimum']}")
+        if "maximum" in schema and value > schema["maximum"]:
+            errors.append(f"{path} must be <= {schema['maximum']}")
+    return errors
+
+
+def _invalid_tool_args_result(tool_name: str, errors: list[str]) -> ToolResult:
+    return ToolResult(
+        ok=False,
+        error="invalid_tool_args",
+        warnings=[
+            ToolWarning(
+                code="invalid_tool_args",
+                severity="error",
+                message="Tool arguments do not match the registered input schema.",
+                details={"tool_name": tool_name, "errors": errors},
+            )
+        ],
+    )
+
+
+def _matches_type(value: Any, expected: str) -> bool:
+    if expected == "null":
+        return value is None
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    return True

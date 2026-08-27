@@ -1,3 +1,4 @@
+import math
 import uuid
 
 from app.agent.registry import ToolRegistry, build_default_registry
@@ -70,6 +71,7 @@ class AgentHarnessRunner:
         for idx, (prev_stop, cur_stop) in enumerate(zip(sorted_stops, sorted_stops[1:]), start=1):
             prev = prev_stop["poi"]
             cur = cur_stop["poi"]
+            mode = _transit_mode_for_stops(prev_stop, cur_stop)
             transit = self._call(
                 "compute_transit",
                 {
@@ -79,7 +81,7 @@ class AgentHarnessRunner:
                     "from_lat": prev.get("lat"),
                     "to_lng": cur.get("lng"),
                     "to_lat": cur.get("lat"),
-                    "mode": "driving",
+                    "mode": mode,
                 },
                 context,
                 trace,
@@ -109,7 +111,7 @@ class AgentHarnessRunner:
             state=state,
             trace=trace,
             warnings=warnings,
-            degraded=any(entry.result.degraded for entry in trace),
+            degraded=any(entry.result.degraded or not entry.result.ok for entry in trace),
         )
 
 
@@ -127,7 +129,10 @@ def _itinerary_from_stops(intent: dict, stops: list[dict]) -> dict:
                 "stops": [
                     {
                         "order_index": idx,
-                        "arrive_time": None,
+                        # slot/time/stay 都是校验契约的一部分，组装中间草案时
+                        # 必须原样保留，不能因 schema 暂未建模 slot 而丢失。
+                        "slot": stop.get("slot", ""),
+                        "arrive_time": stop.get("arrive_time"),
                         "stay_minutes": stop.get("stay_minutes"),
                         "poi": stop["poi"],
                     }
@@ -136,3 +141,28 @@ def _itinerary_from_stops(intent: dict, stops: list[dict]) -> dict:
             }
         ],
     }
+
+
+def _transit_mode_for_stops(from_stop: dict, to_stop: dict) -> str:
+    """短距离优先步行；坐标不足或超过阈值时使用驾车。"""
+    origin = from_stop.get("poi", {})
+    destination = to_stop.get("poi", {})
+    coords = (
+        origin.get("lng"),
+        origin.get("lat"),
+        destination.get("lng"),
+        destination.get("lat"),
+    )
+    if any(value is None for value in coords):
+        return "driving"
+    distance = _haversine_m(*coords)
+    return "walking" if distance <= 2000 else "driving"
+
+
+def _haversine_m(from_lng: float, from_lat: float, to_lng: float, to_lat: float) -> int:
+    radius = 6371000.0
+    p1, p2 = math.radians(from_lat), math.radians(to_lat)
+    dphi = math.radians(to_lat - from_lat)
+    dlambda = math.radians(to_lng - from_lng)
+    h = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlambda / 2) ** 2
+    return int(2 * radius * math.asin(math.sqrt(h)))

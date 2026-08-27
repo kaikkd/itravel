@@ -52,13 +52,15 @@ def estimate_visit_duration_tool(args: dict, context: ToolContext) -> ToolResult
 def compute_transit_tool(args: dict, context: ToolContext) -> ToolResult:
     # transit.recompute_segment 内部已有高德/估算降级逻辑，tool 层只负责
     # 统一返回 ToolResult，并把 degraded 状态向上透传。
+    mode = str(args.get("mode") or "driving")
     data = transit.recompute_segment(
         args.get("from_lng"),
         args.get("from_lat"),
         args.get("to_lng"),
         args.get("to_lat"),
-        str(args.get("mode") or "driving"),
+        mode,
     )
+    data = {"mode": mode, **data}
     return ToolResult(data=data, degraded=bool(data.get("degraded")))
 
 
@@ -139,23 +141,53 @@ def validate_itinerary_tool(args: dict, context: ToolContext) -> ToolResult:
                         details={"poi_name": name, "day_index": day.day_index},
                     )
                 )
+            elif not validators.valid_coord(stop.poi.lng, stop.poi.lat):
+                warnings.append(
+                    ToolWarning(
+                        code="invalid_coordinates",
+                        severity="warning",
+                        message=f"Coordinates are outside the supported China range: {name}",
+                        details={"poi_name": name, "day_index": day.day_index},
+                    )
+                )
             # 优先使用原始 stop 的 slot 判断日程结构；category 只作为兜底。
             # 这样 LLM 或工具明确给出的“早餐/晚餐”不会被 category=eat 抹平。
             slot = _slot_from_raw_stop(raw_stop, stop.poi.category)
             if slot:
                 slots.append(slot)
-            minutes = _hhmm_to_min(stop.arrive_time)
+            raw_time = raw_stop.get("arrive_time") if isinstance(raw_stop, dict) else None
+            valid_time = validators.validate_arrive_time(raw_time)
+            if raw_time is not None and valid_time is None:
+                warnings.append(
+                    ToolWarning(
+                        code="invalid_arrive_time",
+                        severity="warning",
+                        message="Stop arrive_time must use a valid 24-hour HH:MM value.",
+                        details={"day_index": day.day_index, "order_index": stop.order_index},
+                    )
+                )
+            minutes = _hhmm_to_min(valid_time)
             if minutes is not None:
-                if minutes < last_time:
+                if minutes <= last_time:
                     warnings.append(
                         ToolWarning(
                             code="non_monotonic_time",
                             severity="warning",
-                            message="Stop arrive_time is earlier than a previous stop.",
+                            message="Stop arrive_time must be later than the previous stop.",
                             details={"day_index": day.day_index, "order_index": stop.order_index},
                         )
                     )
                 last_time = max(last_time, minutes)
+            raw_stay = raw_stop.get("stay_minutes") if isinstance(raw_stop, dict) else None
+            if raw_stay is not None and validators.validate_stay_minutes(raw_stay) is None:
+                warnings.append(
+                    ToolWarning(
+                        code="invalid_stay_minutes",
+                        severity="warning",
+                        message="Stop stay_minutes must be between 1 and 600.",
+                        details={"day_index": day.day_index, "order_index": stop.order_index},
+                    )
+                )
         required = {"breakfast", "lunch", "dinner", "attraction", "hotel"}
         if not required <= set(slots):
             warnings.append(

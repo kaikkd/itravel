@@ -3,7 +3,7 @@ import uuid
 from app.agent.planner import LLMToolPlanner, PlannerResult, ToolPlanner
 from app.agent.recorder import AgentHarnessRecorder
 from app.agent.registry import ToolRegistry, build_default_registry
-from app.agent.runner import _itinerary_from_stops
+from app.agent.runner import _itinerary_from_stops, _transit_mode_for_stops
 from app.agent.schemas import (
     HarnessRequest,
     HarnessRunResult,
@@ -49,7 +49,8 @@ class LLMAgentHarnessRunner:
             state=state,
             trace=trace,
             warnings=warnings,
-            degraded=planner_result.degraded or any(entry.result.degraded for entry in trace),
+            degraded=planner_result.degraded
+            or any(entry.result.degraded or not entry.result.ok for entry in trace),
         )
         if self.recorder is not None:
             self.recorder.record(
@@ -137,6 +138,7 @@ class LLMAgentHarnessRunner:
         for idx, (prev_stop, cur_stop) in enumerate(zip(sorted_stops, sorted_stops[1:]), start=1):
             prev = prev_stop["poi"]
             cur = cur_stop["poi"]
+            mode = _transit_mode_for_stops(prev_stop, cur_stop)
             result = self._call(
                 ToolCall(
                     name="compute_transit",
@@ -147,7 +149,7 @@ class LLMAgentHarnessRunner:
                         "from_lat": prev.get("lat"),
                         "to_lng": cur.get("lng"),
                         "to_lat": cur.get("lat"),
-                        "mode": "driving",
+                        "mode": mode,
                     },
                 ),
                 context,

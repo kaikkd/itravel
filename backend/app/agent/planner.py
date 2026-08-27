@@ -84,7 +84,24 @@ class LLMToolPlanner:
                 ),
             },
         ]
-        raw = "".join(llm.stream_chat(messages, max_tokens=800))
+        try:
+            raw = "".join(llm.stream_chat(messages, max_tokens=800))
+        except Exception as exc:
+            # provider 不可用时仍执行确定性的 v0 工具链，并在 trace 中明确
+            # 标记 planner 降级，避免一次模型故障中断整个 harness。
+            return PlannerResult(
+                tool_calls=_fallback_calls(
+                    [name for name in self.fallback_tool_names if name in allowed]
+                ),
+                warnings=[
+                    ToolWarning(
+                        code="planner_unavailable",
+                        severity="warning",
+                        message=str(exc),
+                    )
+                ],
+                degraded=True,
+            )
         return parse_planner_response(
             raw,
             allowed_tool_names=allowed,
@@ -114,7 +131,9 @@ def parse_planner_response(
         )
         return PlannerResult(
             raw_response=raw_response.strip(),
-            tool_calls=_fallback_calls(fallback_tool_names),
+            tool_calls=_fallback_calls(
+                [name for name in fallback_tool_names if name in allowed_tool_names]
+            ),
             warnings=warnings,
             degraded=True,
         )
@@ -158,15 +177,21 @@ def parse_planner_response(
                 message="Planner did not return any usable tool calls; using fallback plan.",
             )
         )
-        tool_calls = _fallback_calls(fallback_tool_names)
+        tool_calls = _fallback_calls(
+            [name for name in fallback_tool_names if name in allowed_tool_names]
+        )
     else:
-        # v0 harness 需要稳定、可比较的 trace。即使模型漏掉某个工具，也补齐
-        # 最小工具链，避免不同 prompt/model 版本生成不可回放的半截记录。
-        existing = {call.name for call in tool_calls}
+        # v0 harness 需要稳定、可比较的 trace。required 工具按固定顺序
+        # 去重；模型提供的 args 只保留首次出现的合法调用。
+        first_calls: dict[str, ToolCall] = {}
+        for call in tool_calls:
+            first_calls.setdefault(call.name, call)
+        required_names = [name for name in fallback_tool_names if name in allowed_tool_names]
+        existing = set(first_calls)
         missing = [
             name
-            for name in fallback_tool_names
-            if name in allowed_tool_names and name not in existing
+            for name in required_names
+            if name not in existing
         ]
         if missing:
             degraded = True
@@ -174,11 +199,40 @@ def parse_planner_response(
                 ToolWarning(
                     code="planner_missing_required_tool",
                     severity="warning",
-                    message="Planner omitted required v0 tools; appended them in fallback order.",
+                    message="Planner omitted required v0 tools; restored the fixed v0 sequence.",
                     details={"missing_tools": missing},
                 )
             )
-            tool_calls.extend(_fallback_calls(missing))
+        optional: list[ToolCall] = []
+        seen_optional: set[str] = set()
+        for call in tool_calls:
+            if call.name in required_names or call.name in seen_optional:
+                continue
+            optional.append(call)
+            seen_optional.add(call.name)
+        early_optional = [call for call in optional if call.name == "estimate_visit_duration"]
+        remaining_optional = [call for call in optional if call.name != "estimate_visit_duration"]
+        normalized: list[ToolCall] = []
+        for name in required_names:
+            if name == "validate_itinerary":
+                normalized.extend(remaining_optional)
+                remaining_optional = []
+            normalized.append(first_calls.get(name, ToolCall(name=name)))
+            if name == "parse_user_intent":
+                normalized.extend(early_optional)
+                early_optional = []
+        normalized.extend(early_optional)
+        normalized.extend(remaining_optional)
+        if [call.name for call in normalized] != [call.name for call in tool_calls]:
+            degraded = True
+            warnings.append(
+                ToolWarning(
+                    code="planner_tool_order_normalized",
+                    severity="warning",
+                    message="Planner tool calls were reordered and deduplicated for harness v0.",
+                )
+            )
+        tool_calls = normalized
 
     return PlannerResult(
         raw_response=raw_response.strip(),

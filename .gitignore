@@ -25,5 +25,8 @@ dist/
 # 下载的第三方 skill（不入库）
 .taste-skill/
 
+# 本地 agent live replay，可能包含用户原文输入
+.agent_records/
+
 # 编辑器 / 系统
 .DS_Store
