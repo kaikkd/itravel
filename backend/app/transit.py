@@ -12,8 +12,10 @@ from app.config import settings
 _cache: TTLCache = TTLCache(maxsize=512, ttl=3600)
 
 _DRIVING_URL = "https://restapi.amap.com/v3/direction/driving"
-_DETOUR = 1.3  # 直线→实际路网绕路系数
+_DETOUR = 1.3  # 直线→实际驾车路网绕路系数
 _CITY_SPEED = 8.3  # m/s ≈ 30km/h 城区车速
+_WALKING_DETOUR = 1.15
+_WALKING_SPEED = 1.4  # m/s，约 5km/h
 
 
 def _key(flng, flat, tlng, tlat, mode) -> str:
@@ -29,12 +31,17 @@ def _haversine_m(flng, flat, tlng, tlat) -> int:
     return int(2 * r * math.asin(math.sqrt(h)))
 
 
-def _estimate(flng, flat, tlng, tlat) -> dict:
+def _estimate(flng, flat, tlng, tlat, mode: str = "driving") -> dict:
     straight = _haversine_m(flng, flat, tlng, tlat)
-    dist = int(straight * _DETOUR)
+    if mode == "walking":
+        dist = int(straight * _WALKING_DETOUR)
+        speed = _WALKING_SPEED
+    else:
+        dist = int(straight * _DETOUR)
+        speed = _CITY_SPEED
     return {
         "distance_meters": dist,
-        "duration_seconds": int(dist / _CITY_SPEED),
+        "duration_seconds": int(dist / speed),
         "degraded": True,
     }
 
@@ -80,10 +87,10 @@ def recompute_segment(
         return _cache[k]
 
     result = None
-    if settings.amap_key:
+    if settings.amap_key and mode == "driving":
         result = _amap_driving(from_lng, from_lat, to_lng, to_lat)
     if result is None:
-        result = _estimate(from_lng, from_lat, to_lng, to_lat)
+        result = _estimate(from_lng, from_lat, to_lng, to_lat, mode)
 
     _cache[k] = result
     return result
