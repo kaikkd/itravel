@@ -1,3 +1,8 @@
+import math
+
+import pytest
+from pydantic import ValidationError
+
 from app.tools.schemas import RouteStop, ToolPOI
 from app.tools.route_sort_day import normalize_stop_role, route_sort_day
 
@@ -54,8 +59,8 @@ def test_route_sort_day_puts_missing_coordinates_after_sortable_attractions():
         "早餐",
         "近景点",
         "远景点",
-        "未知坐标景点",
         "午餐",
+        "未知坐标景点",
     ]
 
 
@@ -153,3 +158,41 @@ def test_route_sort_day_marks_unknown_role_as_error():
     assert ordered.degraded is True
     assert ordered.warnings[0].code == "unknown_role"
     assert ordered.warnings[0].severity == "error"
+
+
+def test_tool_poi_rejects_invalid_coordinate_values_at_tool_boundary():
+    with pytest.raises(ValidationError):
+        ToolPOI(name="越界点", category="play", lng=999, lat=999)
+
+    with pytest.raises(ValidationError):
+        ToolPOI(name="半截坐标", category="play", lng=104.0, lat=None)
+
+    with pytest.raises(ValidationError):
+        ToolPOI(name="非有限坐标", category="play", lng=math.nan, lat=30.65)
+
+
+def test_route_sort_day_splits_attractions_around_lunch_without_evening_anchor():
+    stops = [
+        _stop("午餐", "lunch", "eat", 104.06, 30.65),
+        _stop("A", "attraction", "play", 104.01, 30.65),
+        _stop("B", "attraction", "play", 104.02, 30.65),
+        _stop("C", "attraction", "play", 104.03, 30.65),
+    ]
+
+    ordered = route_sort_day(stops, start_lng=104.0, start_lat=30.65)
+
+    assert ordered.degraded is False
+    assert [s.poi.name for s in ordered.stops] == ["A", "B", "午餐", "C"]
+
+
+def test_route_sort_day_warns_when_slot_and_category_conflict():
+    stop = _stop("伪早餐景点", "breakfast", "play", 104.01, 30.65)
+
+    role, warning = normalize_stop_role(stop)
+    ordered = route_sort_day([stop], start_lng=104.0, start_lat=30.65)
+
+    assert role == "breakfast"
+    assert warning is not None
+    assert warning.code == "role_category_mismatch"
+    assert ordered.degraded is True
+    assert ordered.warnings[0].code == "role_category_mismatch"

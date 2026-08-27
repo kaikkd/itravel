@@ -47,6 +47,14 @@ _ROLE_ALIASES: dict[str, StopRole] = {
     "酒店": "hotel",
 }
 
+_ROLE_CATEGORIES = {
+    "breakfast": "eat",
+    "lunch": "eat",
+    "dinner": "eat",
+    "attraction": "play",
+    "hotel": "stay",
+}
+
 
 def normalize_stop_role(stop: RouteStop) -> tuple[StopRole, RouteSortWarning | None]:
     """Normalize Chinese/English stop slots into canonical route roles.
@@ -59,7 +67,20 @@ def normalize_stop_role(stop: RouteStop) -> tuple[StopRole, RouteSortWarning | N
     slot_key = (stop.slot or "").strip().lower()
     category = stop.poi.category
     if slot_key in _ROLE_ALIASES:
-        return _ROLE_ALIASES[slot_key], None
+        role = _ROLE_ALIASES[slot_key]
+        expected_category = _ROLE_CATEGORIES.get(role)
+        if expected_category is not None and category != expected_category:
+            return role, RouteSortWarning(
+                code="role_category_mismatch",
+                stop_name=stop.poi.name,
+                slot=stop.slot,
+                category=category,
+                message=(
+                    f"Stop role {role} expects category {expected_category}, "
+                    f"but received {category}."
+                ),
+            )
+        return role, None
 
     if category == "play":
         return "attraction", RouteSortWarning(
@@ -141,9 +162,10 @@ def _nearest_attractions(
 def _split_attractions(
     attractions: list[RouteStop],
     has_lunch: bool,
-    has_evening_anchor: bool,
 ) -> tuple[list[RouteStop], list[RouteStop]]:
-    if not has_lunch or not has_evening_anchor:
+    # 午餐本身就是日间锚点。即使没有晚餐或酒店，也应把景点均分到
+    # 午餐前后，避免所有景点都被排在午餐之前。
+    if not has_lunch:
         return attractions, []
     half = math.ceil(len(attractions) / 2)
     return attractions[:half], attractions[half:]
@@ -192,7 +214,6 @@ def route_sort_day(
     morning, afternoon = _split_attractions(
         sorted_attractions,
         has_lunch=bool(grouped["lunch"]),
-        has_evening_anchor=bool(grouped["dinner"] or grouped["hotel"]),
     )
 
     ordered: list[RouteStop] = []
